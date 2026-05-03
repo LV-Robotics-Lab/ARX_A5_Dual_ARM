@@ -2,7 +2,7 @@
 
 ## 概述
 
-该repo是一个交互式 shell 脚本,用于管理 ARX 双臂示教数据采集的完整流程。通过菜单选项控制 ROS、相机、机械臂、数据订阅器的启停,自动管理 gnome-terminal 子窗口,采集数据保存为 pickle 文件。
+该repo是一个交互式的双臂数据采集系统,用于管理 ARX 双臂示教数据采集的完整流程。通过菜单选项控制 ROS、相机、机械臂、数据订阅器的启停,自动管理 gnome-terminal 子窗口,采集数据保存为 pickle 文件。
 
 ![双臂](./docs/dual_arm.jpg)
 ![架构图](./docs/sys.png)
