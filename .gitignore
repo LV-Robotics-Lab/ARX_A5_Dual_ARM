@@ -1,0 +1,83 @@
+# ============ Python ============
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+build/
+develop-eggs/
+dist/
+wheels/
+.installed.cfg
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ============ A5 SDK 编译产物 ============
+# 编译生成的目录
+A5/build/
+A5/bimanual/api/build/
+
+# 编译生成的动态库和 Python 扩展
+A5/bimanual/api/*.so
+A5/bimanual/api/arx_r5_python/*.so
+A5/bimanual/api/arx_r5_src/*.so
+
+# CMake 缓存
+**/CMakeCache.txt
+**/CMakeFiles/
+**/cmake_install.cmake
+**/Makefile
+**/compile_commands.json
+
+# ============ ROS / catkin ============
+build/
+devel/
+install/
+log/
+.catkin_workspace
+*.bag
+
+# ============ 数据文件 ============
+raw_data/
+*.pkl
+*.npz
+*.h5
+*.hdf5
+
+# ============ 日志和临时文件 ============
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ============ IDE / 编辑器 ============
+.vscode/
+.idea/
+*.iml
+.spyderproject
+.spyproject
+
+# ============ Conda / Python 虚拟环境 ============
+.env
+.venv
+env/
+venv/
+ENV/
+
+# ============ Jupyter ============
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ============ PID / lock 文件 ============
+*.pid
+*.lock
+
+# ============ 系统级 ============
+.cache/
+.local/
