@@ -18,6 +18,7 @@ pip install opencv-python==4.6.0 pyrealsense2==2.54.2.5684 numpy==1.26.4
 ## 启动
 
 ```bash
+conda activate robo_ctrl
 cd ~/workspace/ARX_ARM/data_collection
 ./start_collection.sh
 ```
