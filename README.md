@@ -11,8 +11,10 @@
 请参考 [A5 SDK 安装文档](./A5/README.md) 安装好 ARX A5双臂机械臂。官方仓库请参考：[https://github.com/ARXroboticsX/A5](https://github.com/ARXroboticsX/A5)。另外，你还需要以下必须的软件包：
 
 ```bash
-pip install opencv-python==4.6.0 pyrealsense2==2.54.2.5684 numpy==1.26.4 "rerun-sdk<0.20"
+pip install opencv-python==4.6.0 pyrealsense2==2.54.2.5684 numpy==1.26.4 "rerun-sdk<0.20" h5py
 ```
+
+> `h5py` 用于深度图的分块流式写盘(`cameraN_depth.h5`),避免长录制把内存撑爆。
 
 > `rerun-sdk` 必须锁在 0.20 之前的版本。0.20+ 依赖 numpy 2.0,会和 RoboStack 用 numpy 1.x ABI 编译的 `cv_bridge` 冲突,导致 `data_record.py` 启动失败。
 
@@ -85,12 +87,13 @@ cd ~/workspace/ARX_A5_Dual_ARM
 
 **操作流程**(脚本自动执行):
 
-1. 给订阅器发送 `SIGINT`,触发其内部 `signal_handler` → 写入 4 个 pickle:
-   - `image.pkl` — 所有相机的 RGB 帧 + 时间戳
-   - `depth.pkl` — 所有相机的深度帧 + 时间戳
+1. 给订阅器发送 `SIGINT`,触发其内部 `signal_handler` → finalize 流式写盘:
+   - `cameraN_rgb.mp4` — 每相机一个 mp4(录制过程中已逐帧写入,这里只是 release writer)
+   - `cameraN_depth.h5` — 每相机一个 HDF5(`depth_mm` uint16 + `timestamps_ms` int64)
+   - `image_timestamps.pkl` — 每相机的 RGB 帧时间戳
    - `state.pkl` — 双臂关节状态 + 时间戳
    - `eef_pose.pkl` — 双臂末端位姿 + 时间戳
-2. 等待最多 6 秒让订阅器写盘完成
+2. 等待最多 30 秒让订阅器收尾完成(实际只需关闭文件句柄,通常 1 秒内)
 3. 关闭 `arx_data_record` 窗口
 4. 给机械臂发布器发送 `SIGINT`,等 3 秒退出
 5. 关闭 `arx_dual_arm_pub` 窗口
@@ -112,13 +115,20 @@ cd ~/workspace/ARX_A5_Dual_ARM
 
 ```
 $DATA_DIR/0000/
-├── image.pkl
-├── depth.pkl
+├── camera1_rgb.mp4
+├── camera2_rgb.mp4
+├── camera3_rgb.mp4
+├── camera1_depth.h5       # 'depth_mm' (uint16, chunked) + 'timestamps_ms'
+├── camera2_depth.h5
+├── camera3_depth.h5
+├── image_timestamps.pkl
 ├── state.pkl
 └── eef_pose.pkl
 $DATA_DIR/0001/
 ...
 ```
+
+> **流式落盘**:RGB 通过 `cv2.VideoWriter` 逐帧写 mp4,深度通过 `h5py` 分块 append 写 HDF5(`compression='lzf'`,无损,uint16 毫米),内存占用恒定。`SIGINT` 触发后只做 finalize(关闭文件句柄 + 写小 pickle),通常 1 秒内完成。旧版 `image.pkl` / `depth.pkl` 仍能被 `visualize_episode.py` 读出来。
 
 ### 选择 [0] 退出并关闭所有终端
 
@@ -169,18 +179,19 @@ sudo apt install wmctrl
 
 没装也能跑,但窗口可能要等内部 bash 的 `read -n 1` 收到任意键才能关。装了就能自动关。
 
-### Q3:数据没保存或保存的 pickle 很小
+### Q3:数据没保存或保存的文件很小
 
 检查订阅器窗口的输出。SIGINT 触发后应该看到类似:
 
 ```
-Received signal 2, saving data...
+Received signal 2, finalizing...
 Saved to /home/.../raw_data/0007
-  camera1 image: 245 frames
+  camera1 RGB:   245 frames
+  camera1 depth: 244 frames
   ...
 ```
 
-如果数字很小或为 0,说明订阅时根本没有数据 → 可能是相机没启动或机械臂没启动。
+如果数字很小或为 0,说明订阅时根本没有数据 → 可能是相机没启动或机械臂没启动。流式写盘下,采集过程中 `cameraN_rgb.mp4` / `cameraN_depth.h5` 已经在持续增长,可以在另一个终端 `ls -lh $DATA_DIR/NNNN/` 实时观察。
 
 ### Q4:连续按两次 [2]
 
@@ -198,7 +209,7 @@ DATA_DIR="$HOME/workspace/raw_data"
 
 ## 数据可视化
 
-每条轨迹保存为 `$DATA_DIR/NNNN/` 下的 4 个 pickle(image/depth/state/eef_pose)。用 [Rerun](https://rerun.io) 可视化最简单的方式就是在主菜单里选 [4],输入轨迹编号(留空 = 最近一条):
+每条轨迹保存为 `$DATA_DIR/NNNN/` 下的若干文件(`cameraN_rgb.mp4` + `cameraN_depth.h5` + `image_timestamps.pkl` + `state.pkl` + `eef_pose.pkl`)。用 [Rerun](https://rerun.io) 可视化最简单的方式就是在主菜单里选 [4],输入轨迹编号(留空 = 最近一条):
 
 ```
 === ARX 双臂数据采集系统 ===

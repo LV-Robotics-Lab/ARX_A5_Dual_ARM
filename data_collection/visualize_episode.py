@@ -2,12 +2,20 @@
 """
 Visualize a recorded ARX episode in Rerun (https://rerun.io).
 
-Loads any subset of:
-  image.pkl     BGR uint8 frames per camera        (~30 Hz)
-  depth.pkl     float32 depth, millimeters         (~30 Hz)
-  state.pkl     joint positions per arm, 7-vector  (~60 Hz)
-  eef_pose.pkl  end-effector pose per arm          (~60 Hz)
-                pose layout: [x, y, z, qw, qx, qy, qz]
+Supports two on-disk layouts:
+
+  Streaming (current, written by data_record.py after the streaming rewrite):
+    cameraN_rgb.mp4          BGR uint8 frames, lazy lossy mp4
+    cameraN_depth.h5         dataset 'depth_mm' (uint16) + 'timestamps_ms'
+    image_timestamps.pkl     {cameraN: [ms, ...]}
+    state.pkl                joint positions per arm
+    eef_pose.pkl             end-effector pose per arm
+
+  Legacy (single-pickle dump, kept for replaying old data):
+    image.pkl     BGR uint8 frames per camera        (~30 Hz)
+    depth.pkl     float32 depth, millimeters         (~30 Hz)
+    state.pkl     joint positions per arm, 7-vector  (~60 Hz)
+    eef_pose.pkl  end-effector pose per arm          (~60 Hz)
 
 Each stream is logged at its own header.stamp timestamp, so the Rerun timeline
 naturally aligns them — there is no resampling here.
@@ -24,11 +32,13 @@ import sys
 from pathlib import Path
 
 import cv2
+import h5py
 import numpy as np
 import rerun as rr
+import rerun.blueprint as rrb
 
 
-def safe_load(path: Path):
+def safe_load_pickle(path: Path):
     if not path.exists():
         return None, "missing"
     try:
@@ -38,28 +48,111 @@ def safe_load(path: Path):
         return None, f"corrupt ({type(e).__name__}: {e})"
 
 
-def log_cameras(image, depth, *, log_depth: bool):
-    if image is None:
+# ---------------- Camera discovery ----------------
+
+def discover_cameras(ep_dir: Path):
+    """Returns (cam_keys, format), where format ∈ {'streaming', 'legacy', 'none'}."""
+    mp4s = sorted(ep_dir.glob("camera*_rgb.mp4"))
+    if mp4s:
+        cam_keys = [p.name.replace("_rgb.mp4", "") for p in mp4s]
+        return cam_keys, "streaming"
+
+    img_pkl = ep_dir / "image.pkl"
+    if img_pkl.exists():
+        data, status = safe_load_pickle(img_pkl)
+        if data is not None:
+            return sorted(data.keys()), "legacy"
+
+    return [], "none"
+
+
+def has_depth(ep_dir: Path, cam_keys, fmt: str) -> bool:
+    if fmt == "streaming":
+        return any((ep_dir / f"{k}_depth.h5").exists() for k in cam_keys)
+    if fmt == "legacy":
+        return (ep_dir / "depth.pkl").exists()
+    return False
+
+
+# ---------------- RGB logging ----------------
+
+def log_rgb_streaming(ep_dir: Path, cam_keys):
+    """Read each camera's mp4 + paired timestamps and log frame-by-frame."""
+    ts_map, _ = safe_load_pickle(ep_dir / "image_timestamps.pkl")
+    if ts_map is None:
+        ts_map = {}
+    for cam_key in cam_keys:
+        mp4_path = ep_dir / f"{cam_key}_rgb.mp4"
+        if not mp4_path.exists():
+            continue
+        stamps = ts_map.get(cam_key, [])
+        cap = cv2.VideoCapture(str(mp4_path))
+        path = f"world/{cam_key}/rgb"
+        i = 0
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            # Time tag: prefer the original header.stamp if we have it,
+            # otherwise fall back to frame index / fps for graceful degradation.
+            if i < len(stamps):
+                rr.set_time_seconds("time", stamps[i] / 1000.0)
+            else:
+                fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+                rr.set_time_seconds("time", i / fps)
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            rr.log(path, rr.Image(rgb))
+            i += 1
+        cap.release()
+
+
+def log_rgb_legacy(image_pkl):
+    if image_pkl is None:
         return
-    for cam_key in sorted(image.keys()):
-        frames = image[cam_key]["image"]
-        stamps = image[cam_key]["timestamps"]
+    for cam_key in sorted(image_pkl.keys()):
+        frames = image_pkl[cam_key]["image"]
+        stamps = image_pkl[cam_key]["timestamps"]
         path = f"world/{cam_key}/rgb"
         for img, ts_ms in zip(frames, stamps):
             rr.set_time_seconds("time", ts_ms / 1000.0)
             rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             rr.log(path, rr.Image(rgb))
 
-    if log_depth and depth is not None:
-        for cam_key in sorted(depth.keys()):
-            dframes = depth[cam_key]["depth"]
-            stamps = depth[cam_key]["timestamps"]
-            path = f"world/{cam_key}/depth"
-            for d, ts_ms in zip(dframes, stamps):
-                rr.set_time_seconds("time", ts_ms / 1000.0)
-                # realsense_pub_node publishes mm cast to float32 → meter=1000
-                rr.log(path, rr.DepthImage(d, meter=1000.0))
 
+# ---------------- Depth logging ----------------
+
+def log_depth_streaming(ep_dir: Path, cam_keys):
+    for cam_key in cam_keys:
+        h5_path = ep_dir / f"{cam_key}_depth.h5"
+        if not h5_path.exists():
+            continue
+        path = f"world/{cam_key}/depth"
+        try:
+            with h5py.File(h5_path, "r") as f:
+                depth = f["depth_mm"]
+                ts    = f["timestamps_ms"]
+                n = min(depth.shape[0], ts.shape[0])
+                for i in range(n):
+                    rr.set_time_seconds("time", float(ts[i]) / 1000.0)
+                    # uint16 millimetres → meter=1000 tells Rerun how to scale
+                    rr.log(path, rr.DepthImage(depth[i], meter=1000.0))
+        except Exception as e:
+            print(f"  skipped {h5_path.name}: {type(e).__name__}: {e}")
+
+
+def log_depth_legacy(depth_pkl):
+    if depth_pkl is None:
+        return
+    for cam_key in sorted(depth_pkl.keys()):
+        dframes = depth_pkl[cam_key]["depth"]
+        stamps  = depth_pkl[cam_key]["timestamps"]
+        path = f"world/{cam_key}/depth"
+        for d, ts_ms in zip(dframes, stamps):
+            rr.set_time_seconds("time", ts_ms / 1000.0)
+            rr.log(path, rr.DepthImage(d, meter=1000.0))
+
+
+# ---------------- Joints / eef (unchanged) ----------------
 
 def log_joints(state):
     if state is None:
@@ -79,7 +172,6 @@ def log_joints(state):
 def log_eef(eef):
     if eef is None:
         return
-    # arrow colors: left = red, right = blue (matches common L/R convention)
     color_by_side = {"left_arm": [220, 60, 60], "right_arm": [60, 120, 220]}
     for side in ("left_arm", "right_arm"):
         if side not in eef:
@@ -98,7 +190,6 @@ def log_eef(eef):
                 rotation=rr.Quaternion(xyzw=[qx, qy, qz, qw]),
                 axis_length=0.1,
             ))
-            # also drop a colored dot so the trajectory is visible without axes
             rr.log(f"world/{side}/eef_pt", rr.Points3D([xyz], colors=[color], radii=0.006))
 
 
@@ -109,37 +200,74 @@ def main():
     ap.add_argument("--save", type=Path, default=None,
                     help="write a .rrd file instead of spawning the viewer")
     ap.add_argument("--connect", type=str, default=None,
-                    help="connect to an already-running rerun viewer at host:port (e.g. 127.0.0.1:9876)")
+                    help="connect to an already-running rerun viewer at host:port")
     args = ap.parse_args()
 
     ep = args.episode_dir
     if not ep.is_dir():
         sys.exit(f"not a directory: {ep}")
 
-    image, image_status = safe_load(ep / "image.pkl")
-    depth, depth_status = (None, "skipped") if args.no_depth else safe_load(ep / "depth.pkl")
-    state, state_status = safe_load(ep / "state.pkl")
-    eef,   eef_status   = safe_load(ep / "eef_pose.pkl")
+    cam_keys, fmt = discover_cameras(ep)
+    want_depth = (not args.no_depth) and has_depth(ep, cam_keys, fmt)
+
+    # Load legacy blobs eagerly only if we're in legacy mode (streaming uses
+    # lazy readers built directly inside the log_*_streaming functions).
+    image_pkl = depth_pkl = None
+    image_status = depth_status = "skipped"
+    if fmt == "legacy":
+        image_pkl, image_status = safe_load_pickle(ep / "image.pkl")
+        if want_depth:
+            depth_pkl, depth_status = safe_load_pickle(ep / "depth.pkl")
+
+    state, state_status = safe_load_pickle(ep / "state.pkl")
+    eef,   eef_status   = safe_load_pickle(ep / "eef_pose.pkl")
 
     print(f"episode: {ep}")
-    print(f"  image.pkl    : {image_status}")
-    print(f"  depth.pkl    : {depth_status}")
+    print(f"  format       : {fmt}")
+    print(f"  cameras      : {cam_keys or '(none)'}")
+    print(f"  depth        : {'yes' if want_depth else 'no'}")
+    if fmt == "legacy":
+        print(f"  image.pkl    : {image_status}")
+        print(f"  depth.pkl    : {depth_status}")
     print(f"  state.pkl    : {state_status}")
     print(f"  eef_pose.pkl : {eef_status}")
-    if not any(x is not None for x in (image, depth, state, eef)):
+
+    has_any = bool(cam_keys) or state is not None or eef is not None
+    if not has_any:
         sys.exit("no usable data — nothing to log")
+
+    cam_rows = []
+    for cam_key in cam_keys:
+        row_views = [rrb.Spatial2DView(name=f"{cam_key} RGB", origin=f"/world/{cam_key}/rgb")]
+        if want_depth:
+            row_views.append(rrb.Spatial2DView(name=f"{cam_key} Depth", origin=f"/world/{cam_key}/depth"))
+        cam_rows.append(rrb.Horizontal(*row_views))
+
+    side_views = [rrb.Spatial3DView(name="world", origin="/world")]
+    if state is not None:
+        side_views.append(rrb.TimeSeriesView(name="joints", origin="/plots"))
+
+    blueprint = rrb.Blueprint(
+        rrb.Horizontal(
+            rrb.Vertical(*cam_rows) if cam_rows else rrb.Spatial3DView(origin="/world"),
+            rrb.Vertical(*side_views),
+            column_shares=[2, 1],
+        ),
+        collapse_panels=True,
+    )
 
     rec_name = f"arx_episode_{ep.name}"
     if args.save is not None:
         rr.init(rec_name)
+        rr.send_blueprint(blueprint)
         rr.save(str(args.save))
     elif args.connect is not None:
         rr.init(rec_name)
         rr.connect_tcp(args.connect)
+        rr.send_blueprint(blueprint)
     else:
-        rr.init(rec_name, spawn=True)
+        rr.init(rec_name, spawn=True, default_blueprint=blueprint)
 
-    # World axis as a static anchor (helps orient yourself in 3D view).
     rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
     rr.log("world/axes", rr.Arrows3D(
         origins=[[0, 0, 0]] * 3,
@@ -147,7 +275,15 @@ def main():
         colors=[[255, 0, 0], [0, 255, 0], [0, 0, 255]],
     ), static=True)
 
-    log_cameras(image, depth, log_depth=not args.no_depth)
+    if fmt == "streaming":
+        log_rgb_streaming(ep, cam_keys)
+        if want_depth:
+            log_depth_streaming(ep, cam_keys)
+    elif fmt == "legacy":
+        log_rgb_legacy(image_pkl)
+        if want_depth:
+            log_depth_legacy(depth_pkl)
+
     log_joints(state)
     log_eef(eef)
 

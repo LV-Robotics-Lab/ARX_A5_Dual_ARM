@@ -195,16 +195,17 @@ start_record() {
 stop_record() {
     echo -e "${GREEN}=== 停止录制 / Stop recording ===${NC}"
 
-    # 1. Stop subscriber first — must wait long enough for pickle.dump to finish.
-    #    A single trajectory can dump several GB of image+depth; killing partway
-    #    leaves truncated .pkl files. Default 120s; override via RECORD_TIMEOUT.
-    kill_by_cmd "$RECORD_SCRIPT" "数据订阅 / data subscriber" "${RECORD_TIMEOUT:-120}"
+    # 1. Stop subscriber first (let it finalize streaming writers)
+    # 30s is generous — the streaming writer just needs to close mp4/h5 handles,
+    # which usually finishes in well under 1s. The headroom is for very long
+    # episodes where mp4 trailer write can take a few seconds.
+    kill_by_cmd "$RECORD_SCRIPT" "数据订阅 / data subscriber" 30
 
     # 2. Close subscriber window
     close_terminal_by_title "$RECORD_TITLE"
 
-    # 3. Stop arm publisher (gives SDK time for DisableMotor / clean CAN close)
-    kill_by_cmd "$DARM_SCRIPT" "机械臂发布 / arm publisher" "${DARM_TIMEOUT:-10}"
+    # 3. Stop arm publisher
+    kill_by_cmd "$DARM_SCRIPT" "机械臂发布 / arm publisher" 3
 
     # 4. Close arm publisher window
     close_terminal_by_title "$DARM_TITLE"
@@ -216,10 +217,10 @@ close_all() {
     echo -e "${YELLOW}正在关闭所有进程和终端 / Closing all processes and terminals...${NC}"
 
     # Order: subscriber (saves data) -> arm -> camera -> roscore
-    kill_by_cmd "$RECORD_SCRIPT" "数据订阅 / data subscriber" "${RECORD_TIMEOUT:-120}"
-    kill_by_cmd "$DARM_SCRIPT" "机械臂发布 / arm publisher" "${DARM_TIMEOUT:-10}"
-    kill_by_cmd "$CAMERA_SCRIPT" "相机发布 / camera publisher" 3
-    kill_by_cmd "$ROS_CMD" "roscore" 3
+    kill_by_cmd "$RECORD_SCRIPT" "数据订阅 / data subscriber" 30
+    kill_by_cmd "$DARM_SCRIPT" "机械臂发布 / arm publisher" 3
+    kill_by_cmd "$CAMERA_SCRIPT" "相机发布 / camera publisher" 1
+    kill_by_cmd "$ROS_CMD" "roscore" 1
 
     # Close all terminal windows
     for title in "$ROSCORE_TITLE" "$CAMERA_TITLE" "$DARM_TITLE" "$RECORD_TITLE"; do
