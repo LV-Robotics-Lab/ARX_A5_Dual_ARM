@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ================== Path Configuration ==================
-PROJ_DIR="$HOME/workspace/ARX_ARM"
+PROJ_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 DATA_COLLECTION_DIR="$PROJ_DIR/data_collection"
 DATA_DIR="$HOME/workspace/raw_data"
 
