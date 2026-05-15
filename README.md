@@ -19,8 +19,8 @@ pip install opencv-python==4.6.0 pyrealsense2==2.54.2.5684 numpy==1.26.4
 
 ```bash
 conda activate robo_ctrl
-cd ~/workspace/ARX_ARM/data_collection
-./start_collection.sh
+cd ~/workspace/ARX_A5_Dual_ARM
+./dual_arm_sys.sh
 ```
 
 启动后会进入交互菜单:
@@ -197,9 +197,9 @@ DATA_DIR="$HOME/workspace/raw_data"
 ## 文件结构
 
 ```
-ARX_ARM/
+ARX_A5_Dual_ARM/
+├── dual_arm_sys.sh                 # 本启动脚本(在项目根目录)
 ├── data_collection/
-│   ├── start_collection.sh         # 本启动脚本
 │   ├── dual_arm_ctrl.py            # 机械臂示教 + 发布
 │   ├── realsense_pub_node.py       # 相机发布
 │   └── data_record.py              # 数据订阅 + pickle 保存
