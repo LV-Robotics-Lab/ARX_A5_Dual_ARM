@@ -5,6 +5,11 @@ PROJ_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 DATA_COLLECTION_DIR="$PROJ_DIR/data_collection"
 DATA_DIR="$HOME/workspace/raw_data"
 
+# Conda env used by all sub-processes (roscore / python scripts).
+# Override with CONDA_ENV=... ./dual_arm_sys.sh if needed.
+CONDA_BASE="${CONDA_BASE:-$HOME/miniconda3}"
+CONDA_ENV="${CONDA_ENV:-robo_ctrl}"
+
 # ================== Color Definitions ==================
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -60,8 +65,10 @@ spawn_terminal() {
     # value is consumed), but the bash -c child it spawns DOES contain TITLE_TAG=xxx,
     # so `pkill -f "TITLE_TAG=xxx"` can target that specific window's bash later.
     gnome-terminal --title="$title" -- bash -c \
-        "TITLE_TAG=$title; cd '$cwd' && \
-         echo -e '${YELLOW}已启动 / Started: ${title}${NC}' && \
+        "TITLE_TAG=$title; \
+         source '$CONDA_BASE/etc/profile.d/conda.sh' && conda activate '$CONDA_ENV' && \
+         cd '$cwd' && \
+         echo -e '${YELLOW}已启动 / Started: ${title}${NC} (env: $CONDA_ENV)' && \
          $cmd; \
          echo '进程已退出,按任意键关闭窗口 / Process exited. Press any key to close window...'; \
          read -n 1"
