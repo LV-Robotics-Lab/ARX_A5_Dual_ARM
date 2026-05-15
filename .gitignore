@@ -25,6 +25,10 @@ A5/bimanual/api/*.so
 A5/bimanual/api/arx_r5_python/*.so
 A5/bimanual/api/arx_r5_src/*.so
 
+# 例外：上游 ARX 提供的预编译二进制依赖（build.sh 需要它们）
+!A5/bimanual/lib/libkinematic_solver.so
+!A5/bimanual/lib/arx_r5_src/libarx_r5a_src.so
+
 # CMake 缓存
 **/CMakeCache.txt
 **/CMakeFiles/
