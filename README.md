@@ -11,8 +11,10 @@
 请参考 [A5 SDK 安装文档](./A5/README.md) 安装好 ARX A5双臂机械臂。官方仓库请参考：[https://github.com/ARXroboticsX/A5](https://github.com/ARXroboticsX/A5)。另外，你还需要以下必须的软件包：
 
 ```bash
-pip install opencv-python==4.6.0 pyrealsense2==2.54.2.5684 numpy==1.26.4
+pip install opencv-python==4.6.0 pyrealsense2==2.54.2.5684 numpy==1.26.4 "rerun-sdk<0.20"
 ```
+
+> `rerun-sdk` 必须锁在 0.20 之前的版本。0.20+ 依赖 numpy 2.0,会和 RoboStack 用 numpy 1.x ABI 编译的 `cv_bridge` 冲突,导致 `data_record.py` 启动失败。
 
 
 ## 启动
@@ -194,6 +196,36 @@ DATA_DIR="$HOME/workspace/raw_data"
 
 改成你想要的目录。
 
+## 数据可视化
+
+每条轨迹保存为 `$DATA_DIR/NNNN/` 下的 4 个 pickle(image/depth/state/eef_pose)。用 [Rerun](https://rerun.io) 可视化最简单的方式就是在主菜单里选 [4],输入轨迹编号(留空 = 最近一条):
+
+```
+=== ARX 双臂数据采集系统 ===
+1. 启动示教数采
+2. 开始录制数据
+3. 停止录制数据
+4. 可视化轨迹 / Visualize episode (Rerun)
+0. 退出并关闭所有终端
+```
+
+或者直接命令行启动:
+
+```bash
+conda activate robo_ctrl
+cd ~/workspace/ARX_A5_Dual_ARM/data_collection
+python visualize_episode.py ~/workspace/raw_data/0000
+```
+
+会弹出 Rerun viewer:三个相机的 RGB+Depth、左右臂关节角时序曲线、末端位姿在 3D 世界坐标系下的轨迹,全部按 `header.stamp` 对齐到同一条时间线。
+
+常用选项:
+- `--no-depth` 跳过深度,内存占用减半,启动更快
+- `--save ep.rrd` 把数据导出成 `.rrd` 文件,之后用 `rerun ep.rrd` 离线打开,适合发给同事
+- `--connect 127.0.0.1:9876` 推到一个已经开着的 viewer
+
+文件部分损坏(比如 `.pkl` 被截断)时脚本会跳过那一路,只可视化能读出来的部分。
+
 ## 文件结构
 
 ```
@@ -202,7 +234,8 @@ ARX_A5_Dual_ARM/
 ├── data_collection/
 │   ├── dual_arm_ctrl.py            # 机械臂示教 + 发布
 │   ├── realsense_pub_node.py       # 相机发布
-│   └── data_record.py              # 数据订阅 + pickle 保存
+│   ├── data_record.py              # 数据订阅 + pickle 保存
+│   └── visualize_episode.py        # Rerun 可视化
 └── A5/
     └── bimanual/                   # ARX SDK
 ```

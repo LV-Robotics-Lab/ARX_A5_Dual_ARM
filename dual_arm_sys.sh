@@ -195,14 +195,16 @@ start_record() {
 stop_record() {
     echo -e "${GREEN}=== 停止录制 / Stop recording ===${NC}"
 
-    # 1. Stop subscriber first (let it save pickle)
-    kill_by_cmd "$RECORD_SCRIPT" "数据订阅 / data subscriber" 6
+    # 1. Stop subscriber first — must wait long enough for pickle.dump to finish.
+    #    A single trajectory can dump several GB of image+depth; killing partway
+    #    leaves truncated .pkl files. Default 120s; override via RECORD_TIMEOUT.
+    kill_by_cmd "$RECORD_SCRIPT" "数据订阅 / data subscriber" "${RECORD_TIMEOUT:-120}"
 
     # 2. Close subscriber window
     close_terminal_by_title "$RECORD_TITLE"
 
-    # 3. Stop arm publisher
-    kill_by_cmd "$DARM_SCRIPT" "机械臂发布 / arm publisher" 3
+    # 3. Stop arm publisher (gives SDK time for DisableMotor / clean CAN close)
+    kill_by_cmd "$DARM_SCRIPT" "机械臂发布 / arm publisher" "${DARM_TIMEOUT:-10}"
 
     # 4. Close arm publisher window
     close_terminal_by_title "$DARM_TITLE"
@@ -214,10 +216,10 @@ close_all() {
     echo -e "${YELLOW}正在关闭所有进程和终端 / Closing all processes and terminals...${NC}"
 
     # Order: subscriber (saves data) -> arm -> camera -> roscore
-    kill_by_cmd "$RECORD_SCRIPT" "数据订阅 / data subscriber" 6
-    kill_by_cmd "$DARM_SCRIPT" "机械臂发布 / arm publisher" 3
-    kill_by_cmd "$CAMERA_SCRIPT" "相机发布 / camera publisher" 1
-    kill_by_cmd "$ROS_CMD" "roscore" 1
+    kill_by_cmd "$RECORD_SCRIPT" "数据订阅 / data subscriber" "${RECORD_TIMEOUT:-120}"
+    kill_by_cmd "$DARM_SCRIPT" "机械臂发布 / arm publisher" "${DARM_TIMEOUT:-10}"
+    kill_by_cmd "$CAMERA_SCRIPT" "相机发布 / camera publisher" 3
+    kill_by_cmd "$ROS_CMD" "roscore" 3
 
     # Close all terminal windows
     for title in "$ROSCORE_TITLE" "$CAMERA_TITLE" "$DARM_TITLE" "$RECORD_TITLE"; do
@@ -227,12 +229,45 @@ close_all() {
     echo -e "${GREEN}系统已安全退出 / System exited safely${NC}"
 }
 
+visualize_episode() {
+    echo -e "${GREEN}=== 可视化轨迹 / Visualize episode ===${NC}"
+    echo -n "轨迹编号(留空 = 最近一条) / Episode number (blank = latest): "
+    read -r ep_input
+
+    local ep_dir
+    if [ -z "$ep_input" ]; then
+        # Pick the highest-numbered episode dir under $DATA_DIR (sort -V handles 0009 vs 0010).
+        ep_dir=$(find "$DATA_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -1)
+        if [ -z "$ep_dir" ]; then
+            echo -e "${RED}$DATA_DIR 下没有任何采集数据 / no episodes in $DATA_DIR${NC}"
+            return 1
+        fi
+        echo -e "${BLUE}使用最近一条 / Using latest: $(basename "$ep_dir")${NC}"
+    else
+        local ep_padded
+        if ! ep_padded=$(printf "%04d" "$ep_input" 2>/dev/null); then
+            echo -e "${RED}无效编号 / invalid number: $ep_input${NC}"
+            return 1
+        fi
+        ep_dir="$DATA_DIR/$ep_padded"
+        if [ ! -d "$ep_dir" ]; then
+            echo -e "${RED}目录不存在 / dir not found: $ep_dir${NC}"
+            return 1
+        fi
+    fi
+
+    local title="arx_viz_$(basename "$ep_dir")"
+    local cmd="python visualize_episode.py '$ep_dir'"
+    spawn_terminal "$title" "$cmd" "$DATA_COLLECTION_DIR"
+}
+
 show_menu() {
     clear
     echo -e "${GREEN}=== ARX 双臂数据采集系统 / ARX Dual-Arm Data Collection System ===${NC}"
     echo -e "1. 启动示教数采 / Start teaching environment"
     echo -e "2. 开始录制数据 / Start recording"
     echo -e "3. 停止录制数据 / Stop recording"
+    echo -e "4. 可视化轨迹 / Visualize episode (Rerun)"
     echo -e "0. 退出并关闭所有终端 / Exit and close all terminals"
     echo -n "请选择 / Select: "
 }
@@ -247,6 +282,7 @@ while true; do
         1) start_teach_env ;;
         2) start_record ;;
         3) stop_record ;;
+        4) visualize_episode ;;
         0) close_all; exit 0 ;;
         *) echo -e "${RED}无效输入,请重试 / Invalid input, please retry${NC}"; sleep 1; continue ;;
     esac
