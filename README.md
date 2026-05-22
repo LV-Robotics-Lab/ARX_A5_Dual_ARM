@@ -14,7 +14,7 @@
 pip install opencv-python==4.6.0 pyrealsense2==2.54.2.5684 numpy==1.26.4 "rerun-sdk<0.20" h5py
 ```
 
-> `h5py` 用于深度图的分块流式写盘(`cameraN_depth.h5`),避免长录制把内存撑爆。
+> `h5py` 用于深度图的分块流式写盘(`<cam>_depth.h5`),避免长录制把内存撑爆。
 
 > `rerun-sdk` 必须锁在 0.20 之前的版本。0.20+ 依赖 numpy 2.0,会和 RoboStack 用 numpy 1.x ABI 编译的 `cv_bridge` 冲突,导致 `data_record.py` 启动失败。
 
@@ -31,12 +31,16 @@ cd ~/workspace/ARX_A5_Dual_ARM
 
 ```
 === ARX 双臂数据采集系统 / ARX Dual-Arm Data Collection System ===
-1. 启动示教数采 / Start teaching environment (roscore + camera)
+任务 / Task: egg_to_bowl    有效 / Valid: 99    失败 / Failed: 13
+1. 启动示教数采 / Start teaching environment (CAN + roscore + camera)
 2. 开始录制数据 / Start recording (arm teaching + data subscriber)
-3. 停止录制数据 / Stop recording (save pickle and stop arm)
+3. 停止录制数据 / Stop recording (finalize files + 询问是否保留)
+4. 可视化轨迹 / Visualize episode (Rerun)
 0. 退出并关闭所有终端 / Exit and close all terminals
 请选择 / Select:
 ```
+
+> **任务隔离**:菜单顶部的 `Task: <name>` 决定数据落在 `$HOME/workspace/raw_data/<TASK_NAME>/` 下。默认 `egg_to_bowl`,采新任务前用 `TASK_NAME=xxx ./dual_arm_sys.sh` 启动,避免和已有数据共用 traj 编号空间。
 
 ## 操作步骤
 
@@ -48,16 +52,20 @@ cd ~/workspace/ARX_A5_Dual_ARM
 
 | 弹出窗口标题 | 启动的进程 | 作用 |
 |---|---|---|
+| `arx_canpub_can1` | `sudo arx_can1` (CAN watchdog) | 左臂 CAN 接口拉起 + 断线重连;`sudo -n` 启动,需配置 NOPASSWD |
+| `arx_canpub_can3` | `sudo arx_can3` (CAN watchdog) | 右臂 CAN 接口同上 |
 | `arx_roscore` | `roscore` | ROS Master,所有话题通信的中枢 |
-| `arx_camera_pub` | `python realsense_pub_node.py` | RealSense 多相机发布,自动检测连接的相机 |
+| `arx_camera_pub` | `python realsense_pub_node.py` | RealSense 多相机发布,按 USB serial 硬绑定到逻辑名 |
 
-**发布的话题**:
+**发布的话题**(按相机逻辑名):
 
-- `/camera_1_image`、`/camera_1_depth`(每个相机各一对 RGB + Depth)
-- `/camera_2_image`、`/camera_2_depth`
-- (有几个相机就发几对)
+- `/cam_top_image`、`/cam_top_depth` — 顶视 L515
+- `/cam_left_wrist_image`、`/cam_left_wrist_depth` — 左腕 D405
+- `/cam_right_wrist_image`、`/cam_right_wrist_depth` — 右腕 D405
 
-完成后控制台会提示「示教环境就绪」。
+> serial → 名字的映射写死在 `realsense_pub_node.py` 的 `SERIAL_TO_NAME` 里。换相机时必须同步更新,否则录到的数据 `cam_top` 可能是腕上那只。
+
+完成后控制台会提示「示教环境就绪」。如果 CAN 没起来(常见原因:`sudo -n` 没配 NOPASSWD)脚本会直接 abort,不会进入下一步。
 
 ### 步骤 2:选择 [2] 开始录制数据
 
@@ -72,7 +80,7 @@ cd ~/workspace/ARX_A5_Dual_ARM
 | `arx_dual_arm_pub` | `python dual_arm_ctrl.py` | 双臂进入重力补偿模式,实时发布关节状态和末端位姿 |
 | `arx_data_record` | `python data_record.py --root_dir=... --traj_number=N` | 订阅所有话题,缓存到内存,等待结束信号统一保存 |
 
-**轨迹编号**:每次按 [2],脚本自动扫描 `$DATA_DIR` 下已有的轨迹目录数量,新轨迹编号 = 已有数量(从 0000 开始递增)。
+**轨迹编号**:新编号 = `max(已有 NNNN) + 1`,从 0000 起。**不**用「目录数量」做编号 —— 那样删一个失败 episode 后下一条会跟现存数据撞号覆盖。失败 episode 移走时它的槽位会被复用(详见步骤 3)。
 
 **发布的话题**(由机械臂发布器):
 
@@ -88,8 +96,8 @@ cd ~/workspace/ARX_A5_Dual_ARM
 **操作流程**(脚本自动执行):
 
 1. 给订阅器发送 `SIGINT`,触发其内部 `signal_handler` → finalize 流式写盘:
-   - `cameraN_rgb.mp4` — 每相机一个 mp4(录制过程中已逐帧写入,这里只是 release writer)
-   - `cameraN_depth.h5` — 每相机一个 HDF5(`depth_mm` uint16 + `timestamps_ms` int64)
+   - `<cam>_rgb.mp4` — 每相机一个 mp4(录制过程中已逐帧写入,这里只是 release writer)
+   - `<cam>_depth.h5` — 每相机一个 HDF5(`depth_mm` uint16 + `timestamps_ms` int64)
    - `image_timestamps.pkl` — 每相机的 RGB 帧时间戳
    - `state.pkl` — 双臂关节状态 + 时间戳
    - `eef_pose.pkl` — 双臂末端位姿 + 时间戳
@@ -97,8 +105,13 @@ cd ~/workspace/ARX_A5_Dual_ARM
 3. 关闭 `arx_data_record` 窗口
 4. 给机械臂发布器发送 `SIGINT`,等 3 秒退出
 5. 关闭 `arx_dual_arm_pub` 窗口
+6. **询问操作员本次是否有效**:
+   - `Y/回车` → 保留为 `$DATA_DIR/NNNN/`
+   - `N` → 整目录移到 `$DATA_DIR/_failed/fNNNN/`(独立的 f 编号),原 NNNN 槽位下次 [2] 复用
 
-**保留运行**:`arx_roscore` 和 `arx_camera_pub` 窗口**不会**关闭,可以直接进入下一轮 [2] 录制。
+> 失败 episode 不删除是为了事后排查采集环境问题(相机抖动、关节漂移、夹爪卡顿等)。失败档案不会污染 training pipeline —— 只要扫 `$DATA_DIR/[0-9]*/`,`_failed/` 前缀的下划线让正则跳过。
+
+**保留运行**:`arx_canpub_can*`、`arx_roscore` 和 `arx_camera_pub` 窗口**不会**关闭,可以直接进入下一轮 [2] 录制。
 
 ### 循环采集
 
@@ -111,22 +124,27 @@ cd ~/workspace/ARX_A5_Dual_ARM
 ...
 ```
 
-每次 traj_number 自动递增,数据保存在:
+每次 traj_number 自动递增,数据保存在 `$HOME/workspace/raw_data/<TASK_NAME>/`:
 
 ```
 $DATA_DIR/0000/
-├── camera1_rgb.mp4
-├── camera2_rgb.mp4
-├── camera3_rgb.mp4
-├── camera1_depth.h5       # 'depth_mm' (uint16, chunked) + 'timestamps_ms'
-├── camera2_depth.h5
-├── camera3_depth.h5
-├── image_timestamps.pkl
-├── state.pkl
-└── eef_pose.pkl
+├── cam_top_rgb.mp4              # 720×1280 BGR
+├── cam_left_wrist_rgb.mp4       # 480×640 BGR
+├── cam_right_wrist_rgb.mp4      # 480×640 BGR
+├── cam_top_depth.h5             # 'depth_mm' (uint16, chunked, lzf) + 'timestamps_ms' (int64)
+├── cam_left_wrist_depth.h5
+├── cam_right_wrist_depth.h5
+├── image_timestamps.pkl         # {cam_top: [ms,...], cam_left_wrist: [...], ...}
+├── state.pkl                    # {left_arm: {joints:(N,7), timestamps:[ms,...]}, right_arm: ...}
+└── eef_pose.pkl                 # {left_arm: {eef_pose:(N,7 = xyz+wxyz), timestamps:[...]}, right_arm: ...}
 $DATA_DIR/0001/
 ...
+$DATA_DIR/_failed/f0000/         # 操作员在 [3] 标记失败的 episode 移到这里
+$DATA_DIR/_failed/f0001/         # 独立的 f0000、f0001... 编号
+...
 ```
+
+> `joints` 第 7 列是夹爪开度(负值,例如 -2.31),不是第 7 个旋转关节 —— A5 是 6DOF 臂。回放时 `[:, 0:6]` 走 `set_joint_positions`,`[:, 6]` 走 `set_gripper_pos`。
 
 > **流式落盘**:RGB 通过 `cv2.VideoWriter` 逐帧写 mp4,深度通过 `h5py` 分块 append 写 HDF5(`compression='lzf'`,无损,uint16 毫米),内存占用恒定。`SIGINT` 触发后只做 finalize(关闭文件句柄 + 写小 pickle),通常 1 秒内完成。旧版 `image.pkl` / `depth.pkl` 仍能被 `visualize_episode.py` 读出来。
 
@@ -191,44 +209,57 @@ Saved to /home/.../raw_data/0007
   ...
 ```
 
-如果数字很小或为 0,说明订阅时根本没有数据 → 可能是相机没启动或机械臂没启动。流式写盘下,采集过程中 `cameraN_rgb.mp4` / `cameraN_depth.h5` 已经在持续增长,可以在另一个终端 `ls -lh $DATA_DIR/NNNN/` 实时观察。
+如果数字很小或为 0,说明订阅时根本没有数据 → 可能是相机没启动或机械臂没启动。流式写盘下,采集过程中 `<cam>_rgb.mp4` / `<cam>_depth.h5` 已经在持续增长,可以在另一个终端 `ls -lh $DATA_DIR/NNNN/` 实时观察。
 
 ### Q4:连续按两次 [2]
 
 脚本会检测 `data_record.py` 是否已在运行,有则提示「已有录制在运行,请先选 [3]」,不会启动重复进程。
 
-### Q5:如何修改保存路径
+### Q5:如何修改保存路径或切换任务
 
-编辑脚本顶部:
+采新任务直接用环境变量,不要改脚本:
 
 ```bash
-DATA_DIR="$HOME/workspace/raw_data"
+TASK_NAME=cup_to_shelf ./dual_arm_sys.sh
 ```
 
-改成你想要的目录。
+数据会落到 `$HOME/workspace/raw_data/cup_to_shelf/`。每个任务有独立的 traj 编号空间和 `_failed/` 档案,互不干扰。
+
+要换 `raw_data` 根目录就编辑 `dual_arm_sys.sh` 里 `DATA_DIR=` 那行。
+
+### Q6:[1] 报 CAN 启动失败
+
+`ensure_can_up` 用 `sudo -n`(non-interactive)拉起 `arx_canN` watchdog。如果没配 NOPASSWD 它会立刻退出,弹出的 `arx_canpub_canX` 窗口会打印 sudo 错误。修法:
+
+```bash
+sudo visudo
+# 加一行(替换 USERNAME):
+USERNAME ALL=(ALL) NOPASSWD: /home/USERNAME/workspace/ARX_A5_Dual_ARM/A5/ARX_CAN/arx_can1, /home/USERNAME/workspace/ARX_A5_Dual_ARM/A5/ARX_CAN/arx_can3
+```
+
+或者手动 `sudo $PROJ/A5/ARX_CAN/arx_can1`、`arx_can3` 起一次,`[1]` 检测到接口已 UP 会跳过启动。
+
+### Q7:相机 serial 不在 SERIAL_TO_NAME 里
+
+换了相机/新机器会报 `WARNING: unknown camera serial(s) — skipped`。把新 serial 加到 `data_collection/realsense_pub_node.py` 的 `SERIAL_TO_NAME` 字典里,逻辑名按用途选(`cam_top` / `cam_left_wrist` / `cam_right_wrist`)。这个绑定必须做,否则 USB 枚举顺序会让顶视图和腕视图随机交换。
 
 ## 数据可视化
 
-每条轨迹保存为 `$DATA_DIR/NNNN/` 下的若干文件(`cameraN_rgb.mp4` + `cameraN_depth.h5` + `image_timestamps.pkl` + `state.pkl` + `eef_pose.pkl`)。用 [Rerun](https://rerun.io) 可视化最简单的方式就是在主菜单里选 [4],输入轨迹编号(留空 = 最近一条):
+每条轨迹保存为 `$DATA_DIR/NNNN/` 下的若干文件(`<cam>_rgb.mp4` + `<cam>_depth.h5` + `image_timestamps.pkl` + `state.pkl` + `eef_pose.pkl`)。用 [Rerun](https://rerun.io) 可视化最简单的方式就是在主菜单里选 [4],输入轨迹编号:
 
-```
-=== ARX 双臂数据采集系统 ===
-1. 启动示教数采
-2. 开始录制数据
-3. 停止录制数据
-4. 可视化轨迹 / Visualize episode (Rerun)
-0. 退出并关闭所有终端
-```
+- 留空 → 最近一条**有效**轨迹(自动跳过 `_failed/`)
+- `7` 或 `0007` → 编号 7 的有效轨迹
+- `f7` 或 `f0007` → `_failed/f0007/` 失败档案
 
 或者直接命令行启动:
 
 ```bash
 conda activate robo_ctrl
 cd ~/workspace/ARX_A5_Dual_ARM/data_collection
-python visualize_episode.py ~/workspace/raw_data/0000
+python visualize_episode.py ~/workspace/raw_data/egg_to_bowl/0000
 ```
 
-会弹出 Rerun viewer:三个相机的 RGB+Depth、左右臂关节角时序曲线、末端位姿在 3D 世界坐标系下的轨迹,全部按 `header.stamp` 对齐到同一条时间线。
+会弹出 Rerun viewer:三个相机的 RGB+Depth、左右臂关节角时序曲线、末端位姿在 3D 世界坐标系下的轨迹,全部按 `header.stamp` 对齐到同一条时间线(时间轴会归一到 episode 起点,所以拖动浮标的范围总是从 0s 开始)。
 
 常用选项:
 - `--no-depth` 跳过深度,内存占用减半,启动更快
@@ -237,16 +268,31 @@ python visualize_episode.py ~/workspace/raw_data/0000
 
 文件部分损坏(比如 `.pkl` 被截断)时脚本会跳过那一路,只可视化能读出来的部分。
 
+## 数据验证(回放)
+
+可视化只看记录到的数,**回放**才能验证记录到的数能否真复现在物理臂上 —— 一段拖动示教数据要是 replay 时撞桌子/抖飞,Rerun 看起来再漂亮也用不了。
+
+操作流程和详细安全注意事项见 [`data_replay/README.md`](./data_replay/README.md)。要点:
+
+- 回放前用 `[1]` 拉起 CAN(不需要 [2],也不需要 roscore/相机)
+- **第一次跑必须清场 + 手放急停按钮**:首帧从当前姿态到 `joints[0]` 会插值过渡,但臂仍可能朝意外方向走
+- 建议先 `--right-only` 或 `--left-only` 单臂验证再上双臂
+- 失败 episode (`_failed/`) 通常 replay 也会失败,不要拿它做首测
+
 ## 文件结构
 
 ```
 ARX_A5_Dual_ARM/
-├── dual_arm_sys.sh                 # 本启动脚本(在项目根目录)
-├── data_collection/
-│   ├── dual_arm_ctrl.py            # 机械臂示教 + 发布
-│   ├── realsense_pub_node.py       # 相机发布
-│   ├── data_record.py              # 数据订阅 + pickle 保存
+├── dual_arm_sys.sh                 # 启动脚本(根目录,管 CAN + roscore + 采集 + 可视化)
+├── data_collection/                # 采集端(写数据)
+│   ├── dual_arm_ctrl.py            # 双臂重力补偿 + 发布 joint/eef
+│   ├── realsense_pub_node.py       # RealSense 多相机发布(serial → 逻辑名硬绑定)
+│   ├── data_record.py              # 订阅所有话题 + 流式落盘
 │   └── visualize_episode.py        # Rerun 可视化
+├── data_replay/                    # 验证端(读数据 + 控臂)
+│   ├── replay_episode.py           # 读 state.pkl 回放,验证采集质量
+│   └── README.md                   # 回放专用文档(前置条件/安全/故障排查)
 └── A5/
-    └── bimanual/                   # ARX SDK
+    ├── bimanual/                   # ARX SDK (SingleArm / DualArm 封装)
+    └── ARX_CAN/                    # CAN watchdog 脚本 (arx_can1, arx_can3)
 ```
