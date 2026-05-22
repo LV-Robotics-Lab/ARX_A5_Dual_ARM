@@ -7,13 +7,22 @@ import pyrealsense2 as rs
 from multiprocessing import Process, set_start_method
 
 
-def camera_worker(device_serial, device_name, freq, camera_id):
-    """
-    单独进程内采集并发布一个相机的彩色和深度图像
-    """
-    rospy.init_node(f'camera_node_{camera_id}', anonymous=True)
-    image_pub = rospy.Publisher(f'/camera_{camera_id}_image', Image, queue_size=10)
-    depth_pub = rospy.Publisher(f'/camera_{camera_id}_depth', Image, queue_size=10)
+# Hard-bind each physical camera (by USB serial) to a logical mount position.
+# Topic names downstream depend on this — never let USB enumeration order pick
+# which camera is "top": with 3 RealSense devices the order flips between boots
+# and any unlabeled mp4 ends up unusable for LeRobot conversion.
+SERIAL_TO_NAME = {
+    'f1470834':     'cam_top',          # L515, overhead
+    '260322270692': 'cam_left_wrist',   # D405 on the LEFT arm wrist
+    '260322273625': 'cam_right_wrist',  # D405 on the RIGHT arm wrist
+}
+
+
+def camera_worker(device_serial, device_name, cam_name, freq):
+    """Publish color + depth for one camera on /<cam_name>_image and /<cam_name>_depth."""
+    rospy.init_node(f'camera_node_{cam_name}', anonymous=True)
+    image_pub = rospy.Publisher(f'/{cam_name}_image', Image, queue_size=10)
+    depth_pub = rospy.Publisher(f'/{cam_name}_depth', Image, queue_size=10)
     bridge = CvBridge()
     pipeline = rs.pipeline()
     config = rs.config()
@@ -27,7 +36,7 @@ def camera_worker(device_serial, device_name, freq, camera_id):
     align_to = rs.stream.color
     align = rs.align(align_to)
     rate = rospy.Rate(freq)
-    print(f'Start to publish camera_{camera_id} image and depth')
+    print(f'Start to publish {cam_name} (serial={device_serial}, {device_name})')
     try:
         while not rospy.is_shutdown():
             frames = pipeline.wait_for_frames()
@@ -38,40 +47,61 @@ def camera_worker(device_serial, device_name, freq, camera_id):
 
             if not color_frame:
                 continue
-            depth_image = np.asanyarray(aligned_depth_frame.get_data()).astype(np.float32) 
+            depth_image = np.asanyarray(aligned_depth_frame.get_data()).astype(np.float32)
             color_image = np.asanyarray(color_frame.get_data())
-            
+
             color_msg = bridge.cv2_to_imgmsg(color_image, encoding="bgr8")
             color_msg.header.stamp = current_time
-            color_msg.header.frame_id = f"camera_{camera_id}_frame"
+            color_msg.header.frame_id = f"{cam_name}_frame"
 
             depth_msg = bridge.cv2_to_imgmsg(depth_image, encoding="32FC1")
             depth_msg.header.stamp = current_time
-            depth_msg.header.frame_id = f"camera_{camera_id}_frame"
-            
+            depth_msg.header.frame_id = f"{cam_name}_frame"
+
             image_pub.publish(color_msg)
             depth_pub.publish(depth_msg)
             rate.sleep()
     finally:
         pipeline.stop()
-        print(f"Pipeline for {device_serial} stopped.")
+        print(f"Pipeline for {cam_name} ({device_serial}) stopped.")
 
 
 class RealsenseMulti:
     def __init__(self, freq=30):
         self.freq = freq
         self.device_info = []
+        unknown = []
         for device in rs.context().devices:
             device_name = device.get_info(rs.camera_info.name)
-            if device_name.lower() != 'platform camera':
-                serial = device.get_info(rs.camera_info.serial_number)
-                self.device_info.append((serial, device_name))
-    
+            if device_name.lower() == 'platform camera':
+                continue
+            serial = device.get_info(rs.camera_info.serial_number)
+            cam_name = SERIAL_TO_NAME.get(serial)
+            if cam_name is None:
+                unknown.append((serial, device_name))
+                continue
+            self.device_info.append((serial, device_name, cam_name))
+
+        if unknown:
+            print('WARNING: unknown camera serial(s) — skipped:')
+            for s, n in unknown:
+                print(f'  serial={s} ({n})')
+            print('Add them to SERIAL_TO_NAME in realsense_pub_node.py to use.')
+
+        if not self.device_info:
+            raise RuntimeError(
+                'No known RealSense cameras detected. '
+                f'Expected serials: {list(SERIAL_TO_NAME.keys())}'
+            )
+
+        print('Camera binding:')
+        for serial, name, cam in self.device_info:
+            print(f'  {cam:18s} <- serial={serial} ({name})')
+
     def run(self):
         procs = []
-        for i, (serial, name) in enumerate(self.device_info):
-            camera_id = i+1
-            p = Process(target=camera_worker, args=(serial, name, self.freq, camera_id))
+        for serial, name, cam_name in self.device_info:
+            p = Process(target=camera_worker, args=(serial, name, cam_name, self.freq))
             p.start()
             procs.append(p)
         try:

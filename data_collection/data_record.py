@@ -5,11 +5,14 @@ Subscribe to all data topics and STREAM them to disk so memory stays bounded
 no matter how long the recording is.
 
 Layout written under <save_path>/:
-    cameraN_rgb.mp4         BGR uint8, one mp4 per camera (cv2.VideoWriter)
-    cameraN_depth.h5        chunked uint16 (mm) + timestamps_ms (int64)
-    image_timestamps.pkl    {cameraN: [ms, ...]}  — RGB frame stamps
+    <cam>_rgb.mp4           BGR uint8, one mp4 per camera (cv2.VideoWriter)
+    <cam>_depth.h5          chunked uint16 (mm) + timestamps_ms (int64)
+    image_timestamps.pkl    {<cam>: [ms, ...]}  — RGB frame stamps
     state.pkl               joints + timestamps  (small, in-memory)
     eef_pose.pkl            eef pose + timestamps (small, in-memory)
+
+<cam> matches whatever realsense_pub_node.py publishes (cam_top,
+cam_left_wrist, cam_right_wrist).
 
 Why streaming: the old version buffered every frame in RAM and dumped one big
 pickle at SIGINT. At ~3 cams × (RGB + Depth) @ 30 Hz this grows ~200 MB/s, so a
@@ -37,33 +40,34 @@ def stamp_to_ms(stamp) -> int:
     return int(1000 * (stamp.secs + stamp.nsecs * 1e-9))
 
 
+DEFAULT_CAM_KEYS = ('cam_top', 'cam_left_wrist', 'cam_right_wrist')
+
+
 class Subscribers:
-    def __init__(self, save_path: str, num_cameras: int = 3,
+    def __init__(self, save_path: str, cam_keys=DEFAULT_CAM_KEYS,
                  video_fps: float = 30.0, video_fourcc: str = 'mp4v'):
         rospy.init_node('all_topics_subscriber', anonymous=True)
         self.save_path = save_path
         os.makedirs(self.save_path, exist_ok=True)
-        self.num_cameras = num_cameras
+        self.cam_keys = list(cam_keys)
         self.video_fps = video_fps
         self.video_fourcc = video_fourcc
         self.bridge = CvBridge()
         self._finalized = False
 
-        cam_keys = [f'camera{i}' for i in range(1, num_cameras + 1)]
-
         # Per-camera RGB streaming state. Writer is lazy-init'd on first frame
         # because we need height/width from the message.
-        self._rgb_writers     = {k: None for k in cam_keys}
-        self._rgb_timestamps  = {k: [] for k in cam_keys}
-        self._rgb_counts      = {k: 0 for k in cam_keys}
-        self._rgb_locks       = {k: threading.Lock() for k in cam_keys}
+        self._rgb_writers     = {k: None for k in self.cam_keys}
+        self._rgb_timestamps  = {k: [] for k in self.cam_keys}
+        self._rgb_counts      = {k: 0 for k in self.cam_keys}
+        self._rgb_locks       = {k: threading.Lock() for k in self.cam_keys}
 
         # Per-camera depth h5 state. Same lazy-init pattern.
-        self._depth_files     = {k: None for k in cam_keys}
-        self._depth_dsets     = {k: None for k in cam_keys}
-        self._depth_ts_dsets  = {k: None for k in cam_keys}
-        self._depth_counts    = {k: 0 for k in cam_keys}
-        self._depth_locks     = {k: threading.Lock() for k in cam_keys}
+        self._depth_files     = {k: None for k in self.cam_keys}
+        self._depth_dsets     = {k: None for k in self.cam_keys}
+        self._depth_ts_dsets  = {k: None for k in self.cam_keys}
+        self._depth_counts    = {k: 0 for k in self.cam_keys}
+        self._depth_locks     = {k: threading.Lock() for k in self.cam_keys}
 
         # State / eef stay in memory — at ~60 Hz × 7 floats per arm this is
         # under a few MB even for hour-long recordings.
@@ -183,14 +187,13 @@ class Subscribers:
     # ---------------- Subscriptions ----------------
 
     def run(self):
-        for i in range(1, self.num_cameras + 1):
-            cam_key = f'camera{i}'
+        for cam_key in self.cam_keys:
             self._all_subs.append(rospy.Subscriber(
-                f'/camera_{i}_image', Image,
+                f'/{cam_key}_image', Image,
                 self._make_image_cb(cam_key), queue_size=10,
             ))
             self._all_subs.append(rospy.Subscriber(
-                f'/camera_{i}_depth', Image,
+                f'/{cam_key}_depth', Image,
                 self._make_depth_cb(cam_key), queue_size=10,
             ))
 
@@ -262,20 +265,25 @@ class Subscribers:
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--root_dir", type=str, default='/home/robotics/raw_data/oo')
-    parser.add_argument("--traj_number", type=int, default=255)
-    parser.add_argument("--num_cameras", type=int, default=3, help="Number of cameras to subscribe")
+    parser.add_argument("--root_dir", type=str, required=True,
+                        help="Episode root dir, e.g. ~/workspace/raw_data/egg_scoop_v1")
+    parser.add_argument("--traj_number", type=int, required=True,
+                        help="Episode number (zero-padded to 4 digits in the path)")
+    parser.add_argument("--cam_keys", type=str,
+                        default=','.join(DEFAULT_CAM_KEYS),
+                        help="Comma-separated camera keys; topics expected at /<key>_image and /<key>_depth")
     parser.add_argument("--video_fps", type=float, default=30.0, help="VideoWriter fps tag")
     parser.add_argument("--video_fourcc", type=str, default='mp4v',
                         help="VideoWriter fourcc (mp4v=lossy mp4, FFV1=lossless if available)")
     args = parser.parse_args()
 
     save_path = os.path.join(args.root_dir, str(args.traj_number).zfill(4))
+    cam_keys = [k.strip() for k in args.cam_keys.split(',') if k.strip()]
 
     try:
         subscribers = Subscribers(
             save_path=save_path,
-            num_cameras=args.num_cameras,
+            cam_keys=cam_keys,
             video_fps=args.video_fps,
             video_fourcc=args.video_fourcc,
         )

@@ -167,7 +167,10 @@ if __name__ == "__main__":
         '--freq',
         type=int,
         default=60,
-        help='Publishing frequency (Hz)',
+        help='Publishing frequency (Hz). Keep at 60 — ARX A5 firmware appears '
+             'to need this rate to stay in gravity-comp mode. Camera/arm rate '
+             'mismatch (cam 30Hz / arm 60Hz) is reconciled in LeRobot conversion '
+             'by downsampling joint state to image timestamps.',
     )
     args = parser.parse_args()
 
