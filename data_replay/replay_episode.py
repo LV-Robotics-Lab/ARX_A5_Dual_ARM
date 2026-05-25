@@ -71,10 +71,50 @@ def clip_window(traj, t_start: float, t_end: Optional[float]):
     return {'joints': traj['joints'][i0:i1], 'ts_s': traj['ts_s'][i0:i1] - traj['ts_s'][i0]}
 
 
-def send_arm_step(arm, row: np.ndarray):
-    """row is shape (7,): first 6 = arm joints, last = gripper."""
+def send_arm_step(arm, row: np.ndarray,
+                  grip_close_thresh=None, grip_close_target=None,
+                  grip_min_recorded=None, grip_min=-3.14,
+                  grip_torque=None, grip_mit_id=7):
+    """row is shape (7,): first 6 = arm joints, last = gripper.
+
+    Arm joints 1-6 are always commanded via set_joint_positions (recorded
+    trajectory passes through unchanged).
+
+    Gripper has two modes for the close phase (g < grip_close_thresh):
+      - Force mode (grip_torque set): mit_joint_control(grip_mit_id, kp=0, kd=0,
+        pos=0, vel=0, torque=-grip_torque). Constant grip force regardless of
+        object thickness. set_gripper_pos's position-mode PD doesn't produce
+        enough holding force when the recorded value is the operator-stopped
+        contact angle, so we apply torque directly.
+      - Position-remap mode (grip_close_target set): stretch the recorded
+        close depth so episode min maps to grip_close_target. Preserves the
+        approach phase, but still position-mode so still capped by PD output.
+
+    Open / approach phase (g >= grip_close_thresh): set_gripper_pos(g) with
+    the raw recorded value.
+    """
     arm.set_joint_positions(row[:6])
-    arm.set_gripper_pos(float(row[6]))
+    g = float(row[6])
+    in_close = grip_close_thresh is not None and g < grip_close_thresh
+    # NOTE: --grip-torque path REMOVED. Calling mit_joint_control for the gripper
+    # alone switches arm_status to 6 globally and joints 1-6 (which still receive
+    # only set_joint_positions, ignored in mode 6) drop to zero torque and the arm
+    # collapses under gravity. To use MIT for any joint, ALL 7 joints must be
+    # commanded via mit_joint_control every frame. See 2026-05-25 incident.
+    if grip_torque is not None:
+        raise NotImplementedError(
+            '--grip-torque is disabled: per-joint MIT command drops other joints '
+            'to zero torque and the arm collapses. Need full-arm MIT (all 7 joints) '
+            'before re-enabling. See replay_episode.py comments.')
+    if (in_close and grip_close_target is not None
+            and grip_min_recorded is not None):
+        depth_raw = grip_close_thresh - g
+        depth_max = grip_close_thresh - grip_min_recorded
+        depth_target = grip_close_thresh - grip_close_target
+        if depth_max > 0:
+            g = grip_close_thresh - depth_raw * (depth_target / depth_max)
+            g = max(g, grip_min)
+    arm.set_gripper_pos(g)
 
 
 def warmup_to_first_frame(arms: dict, first_rows: dict, duration_s: float, hz: float = 60.0):
@@ -111,7 +151,12 @@ def warmup_to_first_frame(arms: dict, first_rows: dict, duration_s: float, hz: f
             time.sleep(sleep)
 
 
-def play_trajectory(arms: dict, trajs: dict, speed: float):
+def play_trajectory(arms: dict, trajs: dict, speed: float,
+                    grip_close_thresh=None, grip_close_target=None, grip_min=-3.14,
+                    grip_torque=None, grip_mit_id=7):
+    # Precompute per-side recorded gripper minimum so the remap inside
+    # send_arm_step can stretch the depth without rescanning every frame.
+    grip_min_recorded = {side: float(trajs[side]['joints'][:, 6].min()) for side in trajs}
     """
     Walk through every recorded sample, pacing via the recorded timestamps so
     pauses in the demonstration are preserved. fixed-rate sleep would either
@@ -131,7 +176,13 @@ def play_trajectory(arms: dict, trajs: dict, speed: float):
         for side, arm in arms.items():
             if arm is None or side not in trajs:
                 continue
-            send_arm_step(arm, trajs[side]['joints'][i])
+            send_arm_step(arm, trajs[side]['joints'][i],
+                          grip_close_thresh=grip_close_thresh,
+                          grip_close_target=grip_close_target,
+                          grip_min_recorded=grip_min_recorded[side],
+                          grip_min=grip_min,
+                          grip_torque=grip_torque,
+                          grip_mit_id=grip_mit_id)
 
         # Pace from recorded timestamp (sub-millisecond accuracy at the
         # cost of one sleep per sample; arms tolerate this fine at 60Hz).
@@ -161,6 +212,21 @@ def main():
     ap.add_argument('--right-can', type=str, default='can3')
     ap.add_argument('--urdf-name', type=str, default='a5.urdf')
     ap.add_argument('--dry-run', action='store_true', help='load data and print summary, no hardware')
+    ap.add_argument('--grip-close-thresh', type=float, default=-0.3,
+                    help='gripper values below this are treated as "intent to close" (default: -0.3). '
+                         'values at this threshold are passed through unchanged.')
+    ap.add_argument('--grip-close-target', type=float, default=None,
+                    help='if set, the recorded gripper minimum gets remapped to this value, and '
+                         'intermediate close values get linearly stretched between threshold and target. '
+                         'e.g. -2.5 / -3.0 / -3.14. default: None = recorded as-is')
+    ap.add_argument('--grip-min', type=float, default=-3.14,
+                    help='hard floor for gripper target (motor limit, default -3.14)')
+    ap.add_argument('--grip-torque', type=float, default=None,
+                    help='if set, during close phase send mit_joint_control with this torque (N·m) '
+                         'instead of set_gripper_pos. Force closure, ignores recorded gripper depth. '
+                         'overrides --grip-close-target. e.g. 0.3 / 0.6 / 1.0. default: None')
+    ap.add_argument('--grip-mit-id', type=int, default=7,
+                    help='gripper joint id for mit_joint_control (default 7, per test_single_arm.py)')
     args = ap.parse_args()
 
     if args.no_left and args.no_right:
@@ -183,6 +249,21 @@ def main():
         ts = t['ts_s']
         print(f'  {side}: {joints.shape[0]} samples, {ts[-1]:.2f}s, '
               f'gripper range=[{joints[:, 6].min():.3f}, {joints[:, 6].max():.3f}]')
+        mask = joints[:, 6] < args.grip_close_thresh
+        n = int(mask.sum())
+        if args.grip_torque is not None and n:
+            print(f'    grip FORCE mode: {n}/{joints.shape[0]} frames (< {args.grip_close_thresh}) '
+                  f'-> mit_joint_control(id={args.grip_mit_id}, torque=-{args.grip_torque:.2f} N·m)')
+        elif args.grip_close_target is not None and n:
+            g_min = float(joints[:, 6].min())
+            depth_max = args.grip_close_thresh - g_min
+            depth_target = args.grip_close_thresh - args.grip_close_target
+            if depth_max > 0:
+                remapped = args.grip_close_thresh - (args.grip_close_thresh - joints[mask, 6]) * (depth_target / depth_max)
+                remapped = np.maximum(remapped, args.grip_min)
+                print(f'    grip remap: {n}/{joints.shape[0]} frames (< {args.grip_close_thresh}) '
+                      f'stretched [{g_min:.3f} -> {args.grip_close_target}] '
+                      f'-> range=[{remapped.min():.3f}, {remapped.max():.3f}]')
 
     if args.dry_run:
         print('dry-run: not connecting to arms')
@@ -212,7 +293,12 @@ def main():
         print(f'warmup: interpolating to first frame over {args.warmup_seconds:.1f}s')
         warmup_to_first_frame(arms, first_rows, args.warmup_seconds)
 
-        play_trajectory(arms, trajs, args.speed)
+        play_trajectory(arms, trajs, args.speed,
+                        grip_close_thresh=args.grip_close_thresh,
+                        grip_close_target=args.grip_close_target,
+                        grip_min=args.grip_min,
+                        grip_torque=args.grip_torque,
+                        grip_mit_id=args.grip_mit_id)
     except KeyboardInterrupt:
         print('replay aborted')
 
