@@ -1,0 +1,18 @@
+{
+  "schema_version": "drag_demo_split.v1",
+  "sources": {
+    "drag": {
+      "manifest": "/home/lv-robotics/workspace/.verifier_reports/initial_batch_manifest.json",
+      "episode_filter": "counted_episodes"
+    },
+    "teleop": {
+      "manifest": null,
+      "episode_filter": "counted_episodes"
+    }
+  },
+  "modes": {
+    "drag_only":   { "drag": 1.0, "teleop": 0.0 },
+    "teleop_only": { "drag": 0.0, "teleop": 1.0 },
+    "mixed_70_30": { "drag": 0.7, "teleop": 0.3 }
+  }
+}

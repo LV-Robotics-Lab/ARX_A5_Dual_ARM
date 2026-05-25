@@ -1,0 +1,117 @@
+{
+  "schema_version": "drag_demo_finetune_comparison.v1",
+  "title": "Fine-tuning comparison: teleop-only vs drag+editing vs raw drag-only vs mixed 70/30",
+  "purpose": "Quantify the value of the hand-removal editing pipeline (Masquerade-style) and of supplementing drag-teaching demonstrations with teleop data, against the simplest baseline (raw drag-only).",
+  "arms": [
+    {
+      "arm_id": "A_teleop_only",
+      "description": "Train on autonomous-teleop-collected demonstrations only.",
+      "data_source": {
+        "split_config_mode": "teleop_only",
+        "expected_manifest": "/home/lv-robotics/workspace/.verifier_reports/teleop_batch_manifest.json"
+      },
+      "data_status_today": "BLOCKED — no teleop data collected; split_config.json sources.teleop.manifest is null."
+    },
+    {
+      "arm_id": "B_drag_plus_editing",
+      "description": "Train on drag-teaching demonstrations that have been passed through the hand-removal editing pipeline (Masquerade-style green-glove inpainting).",
+      "data_source": {
+        "split_config_mode": "drag_only",
+        "expected_manifest": "/home/lv-robotics/workspace/.verifier_reports/edited_batch_manifest.json",
+        "expected_preprocessing": "color-key hand removal driven by the green long gloves; preserves robot motion + object contacts + task state; produces edited mp4s in cam_top_rgb_edited.mp4 etc."
+      },
+      "data_status_today": "BLOCKED — editing pipeline + manifest not yet built. Task task_drag_demo_diff_map_qa covers the editing quality side; an `edited_batch_manifest.json` consumable by the same loader is still TODO."
+    },
+    {
+      "arm_id": "C_raw_drag_only",
+      "description": "Train on the raw (unedited) drag-teaching demonstrations the operators just collected. Baseline.",
+      "data_source": {
+        "split_config_mode": "drag_only",
+        "manifest": "/home/lv-robotics/workspace/.verifier_reports/initial_batch_manifest.json"
+      },
+      "data_status_today": "READY (degraded scale) — 19 SOP-passing episodes available (target 100). Smoke training implemented to prove pipeline; real metrics await reaching closer to the 100-demo target."
+    },
+    {
+      "arm_id": "D_mixed_70_30",
+      "description": "Train on 70% drag-teaching + 30% teleop demonstrations. Probes whether teleop dynamics help close the drag-vs-autonomous distribution gap.",
+      "data_source": {
+        "split_config_mode": "mixed_70_30",
+        "manifests": {
+          "drag":   "/home/lv-robotics/workspace/.verifier_reports/initial_batch_manifest.json",
+          "teleop": "/home/lv-robotics/workspace/.verifier_reports/teleop_batch_manifest.json"
+        }
+      },
+      "data_status_today": "BLOCKED — teleop manifest missing; DragDemoDataset will refuse to silently degrade to a non-mixture distribution (verified in test_drag_demo_loader.py)."
+    }
+  ],
+  "training_setup": {
+    "loader": "/home/lv-robotics/workspace/ARX_A5_Dual_ARM/training/drag_demo_loader.py",
+    "split_config": "/home/lv-robotics/workspace/ARX_A5_Dual_ARM/training/split_config.json",
+    "samples_per_episode": 32,
+    "batch_size": 32,
+    "image_size": [320, 180],
+    "model": {
+      "image_encoder_per_cam": "small CNN: 3->32->64->128 (stride 2 each) -> AdaptiveAvgPool -> 128-d",
+      "state_encoder": "MLP 14 -> 64",
+      "head": "MLP (3*128 + 64) -> 256 -> 14 (action == next-step joint targets, +state_dt_ms forward)",
+      "init": "random; this is a fine-tune-style baseline, not pretrained image weights",
+      "param_budget": "<5M trainable"
+    },
+    "optimizer": {"name": "AdamW", "lr": 3.0e-4, "betas": [0.9, 0.999], "weight_decay": 1.0e-2},
+    "schedule": {"name": "cosine", "warmup_steps": 200},
+    "total_steps_full_run": 20000,
+    "smoke_steps": 100,
+    "smoke_purpose": "prove loader -> model -> loss -> backprop loop end-to-end before any arm has data to support a full run.",
+    "seed": 0,
+    "device": "cuda if available else cpu"
+  },
+  "evaluation": {
+    "held_out_set": "eval_tier_strict_episodes from the manifest (currently 13 drag episodes at <= 0.02 rad stillness)",
+    "offline_metrics": [
+      {"name": "action_mse",           "description": "MSE between predicted next-step joint targets and ground truth, averaged over all sampled timesteps in the held-out set."},
+      {"name": "action_l1_last2s",     "description": "L1 between predicted and ground-truth action in the last 2 s of each episode; isolates terminal-stability behaviour."},
+      {"name": "per_arm_l1",           "description": "Same as above but split between left_arm and right_arm (the right arm is the active manipulator for the spatula SOP)."}
+    ],
+    "online_metrics_robot_only": [
+      {"name": "task_success_rate",    "description": "Fraction of robot rollouts that place the egg mold inside the white plate."},
+      {"name": "terminal_stillness_pass_rate", "description": "Fraction of rollouts whose trailing 2 s passes the SOP <= 0.10 rad gate."},
+      {"name": "contact_safety_rate",  "description": "Fraction of rollouts where spatula contact stays within the yellow gripper region (per the SOP)."}
+    ],
+    "online_metric_status_today": "BLOCKED — requires the physical robot in the loop; not measurable in this remote session."
+  },
+  "experiment_tracking": {
+    "schema_version": "drag_demo_experiment_run.v1",
+    "runs_dir": "/home/lv-robotics/workspace/.experiment_runs/",
+    "per_run_artifacts": ["run.json", "metrics.csv"],
+    "run.json_fields": {
+      "run_id":              "string — <arm_id>_<isoutc>",
+      "arm_id":              "string — A_teleop_only | B_drag_plus_editing | C_raw_drag_only | D_mixed_70_30",
+      "started_at":          "ISO 8601 UTC",
+      "finished_at":         "ISO 8601 UTC",
+      "exit_status":         "string — completed | failed | smoke",
+      "config":              "object — full training_setup + arm-specific data source",
+      "data_provenance":     "object — manifest paths + their sha256",
+      "loader_sha256":       "string",
+      "metrics_per_step":    "list of {step, loss, lr, time_per_step_s}",
+      "final_metrics":       "object — see evaluation.offline_metrics",
+      "system_info":         "object — torch version, cuda available, gpu name",
+      "stdout_tail":         "string — last 4 KB of stdout for forensic value"
+    }
+  },
+  "comparison_protocol": {
+    "step_1": "Confirm each arm's data source is READY in the spec.",
+    "step_2": "For each READY arm, run train_finetune.py with the corresponding mode + manifest. The script auto-tags the run with arm_id and writes run.json.",
+    "step_3": "Aggregate run.jsons via aggregate_runs.py (TODO) — outputs a comparison table indexed by arm_id.",
+    "step_4": "Pass/fail vs baseline: a non-C arm wins if it beats C on (a) action_l1_last2s by >= 10% relative AND (b) online task_success_rate by >= 5 percentage points on robot rollouts."
+  },
+  "today_summary": {
+    "ready_arms":     ["C_raw_drag_only (degraded scale: 19/100 episodes)"],
+    "blocked_arms":   ["A_teleop_only", "B_drag_plus_editing", "D_mixed_70_30"],
+    "smoke_executed_for": "C_raw_drag_only (proof-of-pipeline; not statistically meaningful)",
+    "next_unblockers_in_dependency_order": [
+      "task_drag_demo_initial_batch  — collect more drag demos to reach 100 (operator work, blocked here as needs_user).",
+      "task_drag_demo_diff_map_qa    — finalise editing QA so arm B's manifest can be produced.",
+      "<new>                         — onsite teleop collection to populate arm A and arm D."
+    ]
+  }
+}
