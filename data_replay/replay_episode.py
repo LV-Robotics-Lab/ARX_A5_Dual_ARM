@@ -12,6 +12,13 @@ Reads only state.pkl (joints). Cameras, eef_pose, and timestamps.pkl are ignored
 — this is a verification tool, not a re-recording tool. eef pose is derived from
 joint angles via FK on the arm side anyway, so commanding joints reproduces eef.
 
+Gripper direction convention (A5):  g = 0 is CLOSED (fingers together,
+spring-rest), g = -3.35 is fully OPEN (mechanical limit). Recorded teaching
+trajectories end at g ≈ -0.6 (closed onto the object). Position-mode PD reaches
+-0.6 with zero error → zero torque → object slips. To force a held grip, use
+--grip-hold-target to push the commanded value closer to 0 during the hold
+phase so the motor maintains a position error against the object.
+
 Usage:
     # Quick sanity check (no hardware contact):
     python replay_episode.py ~/workspace/raw_data/egg_to_bowl/0000 --dry-run
@@ -20,7 +27,11 @@ Usage:
     python replay_episode.py ~/workspace/raw_data/egg_to_bowl/0000 \\
         --speed 0.5 --warmup-seconds 8 --no-left
 
-    # Full replay at recorded speed:
+    # Replay with forced grip during hold phase (commands 0.0 = fully closed):
+    python replay_episode.py ~/workspace/raw_data/egg_to_bowl/0000 \\
+        --no-left --speed 0.5 --grip-hold-target 0.0
+
+    # Full replay at recorded speed (no grip override):
     python replay_episode.py ~/workspace/raw_data/egg_to_bowl/0000
 
 CAUTION:
@@ -72,48 +83,29 @@ def clip_window(traj, t_start: float, t_end: Optional[float]):
 
 
 def send_arm_step(arm, row: np.ndarray,
-                  grip_close_thresh=None, grip_close_target=None,
-                  grip_min_recorded=None, grip_min=-3.14,
-                  grip_torque=None, grip_mit_id=7):
+                  grip_hold_thresh=None, grip_hold_target=None):
     """row is shape (7,): first 6 = arm joints, last = gripper.
 
-    Arm joints 1-6 are always commanded via set_joint_positions (recorded
-    trajectory passes through unchanged).
+    Arm joints 1-6 always passed through unchanged via set_joint_positions.
 
-    Gripper has two modes for the close phase (g < grip_close_thresh):
-      - Force mode (grip_torque set): mit_joint_control(grip_mit_id, kp=0, kd=0,
-        pos=0, vel=0, torque=-grip_torque). Constant grip force regardless of
-        object thickness. set_gripper_pos's position-mode PD doesn't produce
-        enough holding force when the recorded value is the operator-stopped
-        contact angle, so we apply torque directly.
-      - Position-remap mode (grip_close_target set): stretch the recorded
-        close depth so episode min maps to grip_close_target. Preserves the
-        approach phase, but still position-mode so still capped by PD output.
+    Gripper convention on A5: g=0 is CLOSED (spring rest), g=-3.35 is OPEN.
+    Recorded trajectories have the operator opening the gripper around the
+    object (g goes negative) then closing back to grip (g returns toward 0).
 
-    Open / approach phase (g >= grip_close_thresh): set_gripper_pos(g) with
-    the raw recorded value.
+    The replay problem: in position-mode PD, commanding the recorded hold
+    value (e.g. -0.6) makes the motor reach -0.6 exactly → zero position
+    error → zero torque → no grip force → object slips.
+
+    Fix: when the recorded g is in the "hold intent" zone (close to 0,
+    i.e. g > grip_hold_thresh), override with grip_hold_target (closer to
+    or at 0). The motor will chase 0 but the object blocks it at the
+    recorded depth → sustained position error → continuous grip torque.
     """
     arm.set_joint_positions(row[:6])
     g = float(row[6])
-    in_close = grip_close_thresh is not None and g < grip_close_thresh
-    # NOTE: --grip-torque path REMOVED. Calling mit_joint_control for the gripper
-    # alone switches arm_status to 6 globally and joints 1-6 (which still receive
-    # only set_joint_positions, ignored in mode 6) drop to zero torque and the arm
-    # collapses under gravity. To use MIT for any joint, ALL 7 joints must be
-    # commanded via mit_joint_control every frame. See 2026-05-25 incident.
-    if grip_torque is not None:
-        raise NotImplementedError(
-            '--grip-torque is disabled: per-joint MIT command drops other joints '
-            'to zero torque and the arm collapses. Need full-arm MIT (all 7 joints) '
-            'before re-enabling. See replay_episode.py comments.')
-    if (in_close and grip_close_target is not None
-            and grip_min_recorded is not None):
-        depth_raw = grip_close_thresh - g
-        depth_max = grip_close_thresh - grip_min_recorded
-        depth_target = grip_close_thresh - grip_close_target
-        if depth_max > 0:
-            g = grip_close_thresh - depth_raw * (depth_target / depth_max)
-            g = max(g, grip_min)
+    if (grip_hold_thresh is not None and grip_hold_target is not None
+            and g > grip_hold_thresh):
+        g = grip_hold_target
     arm.set_gripper_pos(g)
 
 
@@ -152,17 +144,17 @@ def warmup_to_first_frame(arms: dict, first_rows: dict, duration_s: float, hz: f
 
 
 def play_trajectory(arms: dict, trajs: dict, speed: float,
-                    grip_close_thresh=None, grip_close_target=None, grip_min=-3.14,
-                    grip_torque=None, grip_mit_id=7):
-    # Precompute per-side recorded gripper minimum so the remap inside
-    # send_arm_step can stretch the depth without rescanning every frame.
-    grip_min_recorded = {side: float(trajs[side]['joints'][:, 6].min()) for side in trajs}
+                    grip_hold_thresh=None, grip_hold_target=None,
+                    recorder=None):
     """
     Walk through every recorded sample, pacing via the recorded timestamps so
     pauses in the demonstration are preserved. fixed-rate sleep would either
     drift if arm.set_joint_positions blocks, or compress the demo if the
     recording wasn't exactly 60 Hz.
     """
+    if recorder is not None:
+        import rospy  # only when actually recording — keeps plain replay rospy-free
+        _now_ms = lambda: int(rospy.Time.now().to_sec() * 1000)
     # Pick the side that has data as the timeline driver. If both, use left.
     driver = 'left_arm' if 'left_arm' in trajs else 'right_arm'
     ts = trajs[driver]['ts_s']
@@ -177,12 +169,22 @@ def play_trajectory(arms: dict, trajs: dict, speed: float,
             if arm is None or side not in trajs:
                 continue
             send_arm_step(arm, trajs[side]['joints'][i],
-                          grip_close_thresh=grip_close_thresh,
-                          grip_close_target=grip_close_target,
-                          grip_min_recorded=grip_min_recorded[side],
-                          grip_min=grip_min,
-                          grip_torque=grip_torque,
-                          grip_mit_id=grip_mit_id)
+                          grip_hold_thresh=grip_hold_thresh,
+                          grip_hold_target=grip_hold_target)
+            if recorder is not None:
+                # Read back actual SDK state and feed to recorder. Cameras
+                # are recorded async via ROS subscriptions in the recorder.
+                try:
+                    actual_joints = list(arm.get_joint_positions())
+                    actual_eef = list(arm.get_ee_pose())
+                    try:
+                        actual_currents = list(arm.get_joint_currents())
+                    except Exception:
+                        actual_currents = None
+                    recorder.record_arm_state(side, actual_joints, actual_eef,
+                                              _now_ms(), currents=actual_currents)
+                except Exception:
+                    pass  # don't let a transient read failure stop replay
 
         # Pace from recorded timestamp (sub-millisecond accuracy at the
         # cost of one sleep per sample; arms tolerate this fine at 60Hz).
@@ -212,21 +214,21 @@ def main():
     ap.add_argument('--right-can', type=str, default='can3')
     ap.add_argument('--urdf-name', type=str, default='a5.urdf')
     ap.add_argument('--dry-run', action='store_true', help='load data and print summary, no hardware')
-    ap.add_argument('--grip-close-thresh', type=float, default=-0.3,
-                    help='gripper values below this are treated as "intent to close" (default: -0.3). '
-                         'values at this threshold are passed through unchanged.')
-    ap.add_argument('--grip-close-target', type=float, default=None,
-                    help='if set, the recorded gripper minimum gets remapped to this value, and '
-                         'intermediate close values get linearly stretched between threshold and target. '
-                         'e.g. -2.5 / -3.0 / -3.14. default: None = recorded as-is')
-    ap.add_argument('--grip-min', type=float, default=-3.14,
-                    help='hard floor for gripper target (motor limit, default -3.14)')
-    ap.add_argument('--grip-torque', type=float, default=None,
-                    help='if set, during close phase send mit_joint_control with this torque (N·m) '
-                         'instead of set_gripper_pos. Force closure, ignores recorded gripper depth. '
-                         'overrides --grip-close-target. e.g. 0.3 / 0.6 / 1.0. default: None')
-    ap.add_argument('--grip-mit-id', type=int, default=7,
-                    help='gripper joint id for mit_joint_control (default 7, per test_single_arm.py)')
+    ap.add_argument('--grip-hold-thresh', type=float, default=-1.0,
+                    help='recorded gripper values ABOVE this (closer to 0 = closed) are treated as '
+                         '"hold intent" frames. default: -1.0')
+    ap.add_argument('--grip-hold-target', type=float, default=None,
+                    help='if set, hold-intent frames send this value instead of the recorded value. '
+                         'Use closer-to-0 values to force a firmer grip (motor chases 0 with object '
+                         'in the way → sustained torque). e.g. 0.0 (max close) / -0.1 / -0.3. '
+                         'default: None = recorded as-is')
+    ap.add_argument('--record-to', type=str, default=None,
+                    help='if set, record the replay (cameras + actual arm state) to a subdirectory '
+                         'of this BASE path, automatically named after the source episode (e.g. source '
+                         '~/raw_data/egg_to_bowl/0002 + --record-to ~/raw_data/egg_to_bowl_replayed/ '
+                         '→ output ~/raw_data/egg_to_bowl_replayed/0002/). Output format matches '
+                         'data_collection/data_record.py exactly. '
+                         'Requires roscore + realsense_pub_node running (start via dual_arm_sys.sh [1]).')
     args = ap.parse_args()
 
     if args.no_left and args.no_right:
@@ -248,22 +250,15 @@ def main():
         joints = t['joints']
         ts = t['ts_s']
         print(f'  {side}: {joints.shape[0]} samples, {ts[-1]:.2f}s, '
-              f'gripper range=[{joints[:, 6].min():.3f}, {joints[:, 6].max():.3f}]')
-        mask = joints[:, 6] < args.grip_close_thresh
-        n = int(mask.sum())
-        if args.grip_torque is not None and n:
-            print(f'    grip FORCE mode: {n}/{joints.shape[0]} frames (< {args.grip_close_thresh}) '
-                  f'-> mit_joint_control(id={args.grip_mit_id}, torque=-{args.grip_torque:.2f} N·m)')
-        elif args.grip_close_target is not None and n:
-            g_min = float(joints[:, 6].min())
-            depth_max = args.grip_close_thresh - g_min
-            depth_target = args.grip_close_thresh - args.grip_close_target
-            if depth_max > 0:
-                remapped = args.grip_close_thresh - (args.grip_close_thresh - joints[mask, 6]) * (depth_target / depth_max)
-                remapped = np.maximum(remapped, args.grip_min)
-                print(f'    grip remap: {n}/{joints.shape[0]} frames (< {args.grip_close_thresh}) '
-                      f'stretched [{g_min:.3f} -> {args.grip_close_target}] '
-                      f'-> range=[{remapped.min():.3f}, {remapped.max():.3f}]')
+              f'gripper range=[{joints[:, 6].min():.3f}, {joints[:, 6].max():.3f}]  '
+              f'(0=closed, -3.35=open)')
+        if args.grip_hold_target is not None:
+            mask = joints[:, 6] > args.grip_hold_thresh
+            n = int(mask.sum())
+            if n:
+                print(f'    grip HOLD override: {n}/{joints.shape[0]} frames '
+                      f'(g > {args.grip_hold_thresh}) -> set_gripper_pos({args.grip_hold_target}) '
+                      f'(motor chases this against object → sustained grip torque)')
 
     if args.dry_run:
         print('dry-run: not connecting to arms')
@@ -288,19 +283,47 @@ def main():
         raise KeyboardInterrupt
     signal.signal(signal.SIGINT, _on_sigint)
 
+    # Set up recorder (cameras + arm state) if --record-to was specified.
+    # --record-to is a BASE directory; the actual output dir is base/<source_name>
+    # so a replay of .../egg_to_bowl/0002 lands at base/0002 (easy pairing).
+    # If base/<source_name> already exists, append _v1, _v2, ... to avoid
+    # silently overwriting earlier replays.
+    recorder = None
+    if args.record_to:
+        import rospy
+        from data_replay.replay_recorder import ReplayRecorder
+        source_name = os.path.basename(os.path.normpath(ep))
+        base = os.path.expanduser(args.record_to)
+        record_dir = os.path.join(base, source_name)
+        if os.path.exists(record_dir):
+            n = 1
+            while os.path.exists(os.path.join(base, f'{source_name}_v{n}')):
+                n += 1
+            record_dir = os.path.join(base, f'{source_name}_v{n}')
+            print(f'note: {os.path.join(base, source_name)} exists; bumping to _v{n}')
+        rospy.init_node('replay_recorder', anonymous=True, disable_signals=True)
+        recorder = ReplayRecorder(record_dir)
+        print(f'recording to: {record_dir}')
+
     try:
         first_rows = {side: trajs[side]['joints'][0] for side in trajs}
         print(f'warmup: interpolating to first frame over {args.warmup_seconds:.1f}s')
         warmup_to_first_frame(arms, first_rows, args.warmup_seconds)
 
+        if recorder is not None:
+            # Subscribe AFTER warmup so the recorded episode begins at the
+            # trajectory start (matches teaching: [2] starts recording).
+            recorder.start()
+
         play_trajectory(arms, trajs, args.speed,
-                        grip_close_thresh=args.grip_close_thresh,
-                        grip_close_target=args.grip_close_target,
-                        grip_min=args.grip_min,
-                        grip_torque=args.grip_torque,
-                        grip_mit_id=args.grip_mit_id)
+                        grip_hold_thresh=args.grip_hold_thresh,
+                        grip_hold_target=args.grip_hold_target,
+                        recorder=recorder)
     except KeyboardInterrupt:
         print('replay aborted')
+    finally:
+        if recorder is not None:
+            recorder.finalize()
 
 
 if __name__ == '__main__':
