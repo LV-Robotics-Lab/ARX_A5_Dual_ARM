@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arx-wrapper"
+version = "0.1.0"
+description = "Safety-gated Python wrapper and data-collection tooling for ARX A5 dual-arm systems"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+  {name = "LV Robotics Lab"},
+]
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/LV-Robotics-Lab/arx_wrapper"
+Documentation = "https://github.com/LV-Robotics-Lab/arx_wrapper#readme"
+
+[project.optional-dependencies]
+collection = [
+  "h5py>=3.8",
+  "numpy>=1.24,<2",
+  "opencv-python>=4.6,<4.12",
+  "rerun-sdk>=0.18,<0.20",
+]
+realsense = [
+  "pyrealsense2==2.54.2.5684; platform_system == 'Linux'",
+]
+replay = [
+  "numpy>=1.24,<2",
+]
+dev = [
+  "numpy>=1.24,<2",
+  "pytest>=7,<9",
+  "ruff>=0.9,<1",
+]
+
+[project.scripts]
+arx-config = "arx_wrapper.cli:config_main"
+arx-doctor = "arx_wrapper.cli:doctor_main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "UP"]
+ignore = [
+  # The field environment still standardizes on Python 3.9.
+  "UP006",
+  "UP007",
+  "UP035",
+  "UP045",
+]

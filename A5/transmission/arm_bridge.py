@@ -5,6 +5,7 @@ import sys
 
 # 确保 arx .so 在 LD_LIBRARY_PATH 中，否则重启进程
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_repo_root = os.path.dirname(_root)
 _lib  = os.path.join(_root, "bimanual", "lib", "arx_r5_src")
 if _lib not in os.environ.get("LD_LIBRARY_PATH", "").split(os.pathsep):
     os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(
@@ -13,13 +14,18 @@ if _lib not in os.environ.get("LD_LIBRARY_PATH", "").split(os.pathsep):
     os.execv(sys.executable, [sys.executable] + sys.argv)
 if _root not in sys.path:
     sys.path.insert(0, _root)
+_wrapper_src = os.path.join(_repo_root, "src")
+if _wrapper_src not in sys.path:
+    sys.path.insert(0, _wrapper_src)
 
 import json
 import threading
 import time
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
+
+from arx_wrapper import ArmEndpoint, ArxArm, ArxConfig, MotionGate
 
 try:
     import zmq
@@ -96,17 +102,28 @@ def apply_cmd(robot: Tuple[Any, Any], cmd: Dict[str, Any]) -> None:
 # ─────────────────────────────── ZMQ 服务 ────────────────────────────────────
 
 def serve(
-    left_can: str | None,
-    right_can: str | None,
+    left_can: Optional[str],
+    right_can: Optional[str],
     state_pub_port: int = 5555,
     cmd_sub_port: int = 5556,
     state_hz: float = 100.0,
+    gate: Optional[MotionGate] = None,
 ) -> None:
-    """启动 ZMQ 服务left_can/right_can 为 None 则跳过该臂。"""
-    from bimanual import SingleArm
+    """启动 ZMQ 服务；默认 gate 禁止全部运动命令。"""
 
-    _arm = lambda can: SingleArm({"can_port": can, "type": 2}) if can else None
-    robot = (_arm(left_can), _arm(right_can))
+    config = ArxConfig.from_env()
+    motion_gate = MotionGate() if gate is None else gate
+
+    def _arm(side, can):
+        if not can:
+            return None
+        return ArxArm(
+            ArmEndpoint(side, can, config.arms[0].urdf_name),
+            config=config,
+            gate=motion_gate,
+        ).connect()
+
+    robot = (_arm("left", left_can), _arm("right", right_can))
     print(f"[server] 左臂={'on:'+left_can if left_can else 'off'}  右臂={'on:'+right_can if right_can else 'off'}")
 
     ctx = zmq.Context()
@@ -151,3 +168,6 @@ def serve(
         pass
     finally:
         ctx.destroy()
+        for arm in reversed(robot):
+            if arm is not None:
+                arm.close()

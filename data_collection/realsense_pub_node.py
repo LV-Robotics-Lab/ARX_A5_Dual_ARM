@@ -6,16 +6,14 @@ from cv_bridge import CvBridge
 import pyrealsense2 as rs
 from multiprocessing import Process, set_start_method
 
+from arx_wrapper import ArxConfig
+
 
 # Hard-bind each physical camera (by USB serial) to a logical mount position.
 # Topic names downstream depend on this — never let USB enumeration order pick
 # which camera is "top": with 3 RealSense devices the order flips between boots
 # and any unlabeled mp4 ends up unusable for LeRobot conversion.
-SERIAL_TO_NAME = {
-    'f1470834':     'cam_top',          # L515, overhead
-    '260322270692': 'cam_left_wrist',   # D405 on the LEFT arm wrist
-    '260322273625': 'cam_right_wrist',  # D405 on the RIGHT arm wrist
-}
+SERIAL_TO_NAME = dict(ArxConfig.from_env().camera_bindings)
 
 
 def camera_worker(device_serial, device_name, cam_name, freq):
@@ -86,7 +84,7 @@ class RealsenseMulti:
             print('WARNING: unknown camera serial(s) — skipped:')
             for s, n in unknown:
                 print(f'  serial={s} ({n})')
-            print('Add them to SERIAL_TO_NAME in realsense_pub_node.py to use.')
+            print('Set ARX_CAM_*_SERIAL in config/arx.local.env to use them.')
 
         if not self.device_info:
             raise RuntimeError(

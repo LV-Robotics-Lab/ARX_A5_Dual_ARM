@@ -5,14 +5,25 @@ PROJ_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 DATA_COLLECTION_DIR="$PROJ_DIR/data_collection"
 ARX_CAN_DIR="$PROJ_DIR/A5/ARX_CAN"
 
+# Machine-specific, non-secret hardware mapping. Copy config/arx.env.example to
+# config/arx.local.env and keep that local file out of Git.
+ARX_CONFIG_FILE="${ARX_CONFIG_FILE:-$PROJ_DIR/config/arx.local.env}"
+if [ -f "$ARX_CONFIG_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$ARX_CONFIG_FILE"
+    set +a
+fi
+
 # CAN interfaces for left/right arms. Must match dual_arm_ctrl.py defaults.
-LEFT_CAN="${LEFT_CAN:-can1}"
-RIGHT_CAN="${RIGHT_CAN:-can3}"
+LEFT_CAN="${ARX_LEFT_CAN:-${LEFT_CAN:-can1}}"
+RIGHT_CAN="${ARX_RIGHT_CAN:-${RIGHT_CAN:-can3}}"
 
 # Task name becomes a subdir so different tasks don't share traj numbering.
 # Override with TASK_NAME=... ./dual_arm_sys.sh if collecting a different task.
-TASK_NAME="${TASK_NAME:-egg_to_bowl}"
-DATA_DIR="$HOME/workspace/raw_data/$TASK_NAME"
+TASK_NAME="${ARX_TASK_NAME:-${TASK_NAME:-egg_to_bowl}}"
+DATA_ROOT="${ARX_DATA_ROOT:-$HOME/workspace/raw_data}"
+DATA_DIR="$DATA_ROOT/$TASK_NAME"
 
 # Failed episodes go here instead of being deleted. Underscore prefix means
 # the success traj_number scan (regex .*/[0-9]+$) ignores it, so the next [2]
@@ -41,6 +52,21 @@ if [ ! -d "$DATA_COLLECTION_DIR" ]; then
     exit 1
 fi
 
+if [[ ! "$LEFT_CAN" =~ ^[A-Za-z0-9_.:-]+$ ]] || [[ ! "$RIGHT_CAN" =~ ^[A-Za-z0-9_.:-]+$ ]]; then
+    echo -e "${RED}错误 / Error: invalid CAN interface name${NC}"
+    exit 1
+fi
+
+if [ "$LEFT_CAN" = "$RIGHT_CAN" ]; then
+    echo -e "${RED}错误 / Error: left and right arms cannot share one CAN interface${NC}"
+    exit 1
+fi
+
+if [[ ! "$TASK_NAME" =~ ^[A-Za-z0-9_.:-]+$ ]] || [ "$TASK_NAME" = "." ] || [ "$TASK_NAME" = ".." ]; then
+    echo -e "${RED}错误 / Error: invalid task name: $TASK_NAME${NC}"
+    exit 1
+fi
+
 if [ ! -d "$DATA_DIR" ]; then
     echo -e "${YELLOW}数据存储目录不存在,创建中 / Data directory does not exist, creating: $DATA_DIR${NC}"
     mkdir -p "$DATA_DIR" || { echo -e "${RED}创建失败 / Failed to create${NC}"; exit 1; }
@@ -52,7 +78,7 @@ DARM_SCRIPT="dual_arm_ctrl.py"
 CAMERA_SCRIPT="realsense_pub_node.py"
 RECORD_SCRIPT="data_record.py"
 
-DARM_CMD="python ${DARM_SCRIPT}"
+DARM_CMD="python ${DARM_SCRIPT} --left-can ${LEFT_CAN} --right-can ${RIGHT_CAN} --execute --clearance-confirmed --estop-ready --exclusive-control-confirmed"
 CAMERA_CMD="python ${CAMERA_SCRIPT}"
 ROS_CMD="roscore"
 
@@ -162,6 +188,33 @@ is_roscore_running() {
     pgrep -f "$ROS_CMD" >/dev/null 2>&1
 }
 
+check_wrapper_install() {
+    local env_python="$CONDA_BASE/envs/$CONDA_ENV/bin/python"
+    if [ ! -x "$env_python" ]; then
+        echo -e "${RED}Conda 环境不存在 / environment not found: $CONDA_ENV${NC}"
+        return 1
+    fi
+    if ! "$env_python" -c "import arx_wrapper" >/dev/null 2>&1; then
+        echo -e "${RED}arx_wrapper 尚未安装到 $CONDA_ENV / is not installed${NC}"
+        echo -e "${YELLOW}运行 / Run: conda activate $CONDA_ENV && pip install -e '$PROJ_DIR'${NC}"
+        return 1
+    fi
+}
+
+confirm_teaching_motion() {
+    echo -e "${YELLOW}即将把双臂切换到重力补偿模式 / About to enable gravity compensation.${NC}"
+    echo "  - 双臂工作区已清空 / workspace is clear"
+    echo "  - 急停在手边 / e-stop is ready"
+    echo "  - 无其他控制进程 / no competing controller is running"
+    echo -n "输入 TEACH 继续 / Type TEACH to continue: "
+    local confirmation
+    read -r confirmation
+    if [ "$confirmation" != "TEACH" ]; then
+        echo -e "${YELLOW}已取消,未连接机械臂 / cancelled before arm connection${NC}"
+        return 1
+    fi
+}
+
 # Bring a CAN interface up via the ARX-provided arx_canN watchdog.
 # Args: $1=can name (e.g. can1)
 # Note: arx_canN is a LONG-RUNNING daemon (while-true loop that monitors and
@@ -224,6 +277,10 @@ ensure_can_up() {
 start_teach_env() {
     echo -e "${GREEN}=== 启动示教数采环境 / Starting teaching environment ===${NC}"
 
+    if ! check_wrapper_install; then
+        return 1
+    fi
+
     # Bring CAN interfaces up first — without these the arms in [2] are
     # reachable in the SDK but commands (incl. gravity comp) never get to
     # the firmware, so the arms feel rigid.
@@ -263,6 +320,10 @@ start_record() {
 
     if pgrep -f "$RECORD_SCRIPT" >/dev/null 2>&1; then
         echo -e "${RED}已有录制在运行,请先选 [3] 停止 / A recording session is already running. Choose [3] to stop first.${NC}"
+        return 1
+    fi
+
+    if ! confirm_teaching_motion; then
         return 1
     fi
 

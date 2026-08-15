@@ -6,7 +6,7 @@
 # 100-demo target at the accepted 0.10 rad stillness threshold.
 #
 # Usage:
-#   ~/workspace/ARX_A5_Dual_ARM/data_collection/auto_ingest.sh
+#   ~/workspace/arx_wrapper/data_collection/auto_ingest.sh
 #
 # Optional overrides via env vars:
 #   RAW_DATA_ROOT      default: ~/workspace/raw_data
@@ -19,14 +19,16 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 PYTHON="${PYTHON:-$HOME/miniconda3/envs/robo_ctrl/bin/python}"
-RAW_DATA_ROOT="${RAW_DATA_ROOT:-$HOME/workspace/raw_data}"
+RAW_DATA_ROOT="${RAW_DATA_ROOT:-${ARX_DATA_ROOT:-$HOME/workspace/raw_data}}"
 REPORT_DIR="${REPORT_DIR:-$HOME/workspace/.verifier_reports}"
 STILLNESS_RAD="${STILLNESS_RAD:-0.10}"
 
-VERIFIER="$HOME/workspace/ARX_A5_Dual_ARM/data_collection/sop_episode_verifier.py"
-BUILDER="$HOME/workspace/ARX_A5_Dual_ARM/data_collection/build_initial_batch_manifest.py"
-LOADER_SMOKE="$HOME/workspace/ARX_A5_Dual_ARM/data_collection/load_initial_batch.py"
+VERIFIER="$REPO_ROOT/data_collection/sop_episode_verifier.py"
+BUILDER="$REPO_ROOT/data_collection/build_initial_batch_manifest.py"
+LOADER_SMOKE="$REPO_ROOT/data_collection/load_initial_batch.py"
 
 REPORT_JSON="$REPORT_DIR/raw_data_full_report.json"
 MANIFEST_JSON="$REPORT_DIR/initial_batch_manifest.json"

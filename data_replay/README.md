@@ -14,7 +14,7 @@
    `[1]` 会拉起 `can1` 和 `can3` 的 watchdog。**起完之后不要选 [2]**,否则 `dual_arm_ctrl.py` 会把臂设成重力补偿模式跟回放抢控制权。
 3. **不需要** roscore、不需要相机节点 —— 回放走 SDK 直连,不经 ROS。`[1]` 顺带起的 roscore/相机不影响,无视即可。
 4. **conda 环境**:`robo_ctrl`(有 `arx_r5_python` 绑定)。
-5. **工作目录**:仓库根目录(`A5/` 在 PYTHONPATH 里要找得到),脚本里已经 `sys.path.insert` 过了,从哪里跑都行。
+5. **安装 wrapper**:在仓库根目录执行 `pip install -e '.[replay]'`。`ARX_VENDOR_ROOT` 必须指向含 `A5/` 的 checkout。
 
 ## 用法
 
@@ -22,27 +22,31 @@
 
 ```bash
 conda activate robo_ctrl
-cd ~/workspace/ARX_A5_Dual_ARM
+cd ~/workspace/arx_wrapper
 
 # 1. 先 dry-run 看数据范围合不合理
-python data_replay/replay_episode.py ~/workspace/raw_data/egg_to_bowl/0000 --dry-run
+python data_replay/replay_episode.py ~/workspace/raw_data/egg_to_bowl/0000
 
 # 2. 单臂、半速、长 warmup 试一次
 python data_replay/replay_episode.py ~/workspace/raw_data/egg_to_bowl/0000 \
+    --execute --clearance-confirmed --estop-ready --exclusive-control-confirmed \
     --no-left --speed 0.5 --warmup-seconds 8
 
 # 3. 同样参数换另一臂
 python data_replay/replay_episode.py ~/workspace/raw_data/egg_to_bowl/0000 \
+    --execute --clearance-confirmed --estop-ready --exclusive-control-confirmed \
     --no-right --speed 0.5 --warmup-seconds 8
 
 # 4. 都没问题再上双臂、原速
-python data_replay/replay_episode.py ~/workspace/raw_data/egg_to_bowl/0000
+python data_replay/replay_episode.py ~/workspace/raw_data/egg_to_bowl/0000 \
+    --execute --clearance-confirmed --estop-ready --exclusive-control-confirmed
 ```
 
 ### 日常验证(已熟悉这条 episode)
 
 ```bash
-python data_replay/replay_episode.py ~/workspace/raw_data/egg_to_bowl/0042
+python data_replay/replay_episode.py ~/workspace/raw_data/egg_to_bowl/0042 \
+    --execute --clearance-confirmed --estop-ready --exclusive-control-confirmed
 ```
 
 ### 参数
@@ -57,7 +61,8 @@ python data_replay/replay_episode.py ~/workspace/raw_data/egg_to_bowl/0042
 | `--no-left` / `--no-right` | off | 跳过该侧臂 |
 | `--left-can` / `--right-can` | can1 / can3 | CAN 接口名 |
 | `--urdf-name` | a5.urdf | URDF 文件名 |
-| `--dry-run` | off | 只载入数据并打印摘要,不连臂 |
+| `--dry-run` | 默认行为 | 只载入数据并打印摘要,不导入 SDK、不连臂 |
+| `--execute` + 三项确认 | off | 允许真实运动；缺一项即拒绝 |
 
 ## 安全注意事项
 

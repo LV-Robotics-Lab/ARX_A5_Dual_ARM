@@ -20,19 +20,22 @@ trajectories end at g ≈ -0.6 (closed onto the object). Position-mode PD reache
 phase so the motor maintains a position error against the object.
 
 Usage:
-    # Quick sanity check (no hardware contact):
-    python replay_episode.py ~/workspace/raw_data/egg_to_bowl/0000 --dry-run
+    # Default is a quick sanity check with no hardware contact:
+    python replay_episode.py ~/workspace/raw_data/egg_to_bowl/0000
 
-    # First real run — half speed, right arm only, long warmup:
+    # First real run — all confirmations are deliberately explicit:
     python replay_episode.py ~/workspace/raw_data/egg_to_bowl/0000 \\
-        --speed 0.5 --warmup-seconds 8 --no-left
+        --execute --clearance-confirmed --estop-ready \\
+        --exclusive-control-confirmed --speed 0.5 --warmup-seconds 8 --no-left
 
     # Replay with forced grip during hold phase (commands 0.0 = fully closed):
     python replay_episode.py ~/workspace/raw_data/egg_to_bowl/0000 \\
-        --no-left --speed 0.5 --grip-hold-target 0.0
+        --execute --clearance-confirmed --estop-ready \\
+        --exclusive-control-confirmed --no-left --speed 0.5 --grip-hold-target 0.0
 
     # Full replay at recorded speed (no grip override):
-    python replay_episode.py ~/workspace/raw_data/egg_to_bowl/0000
+    python replay_episode.py ~/workspace/raw_data/egg_to_bowl/0000 \\
+        --execute --clearance-confirmed --estop-ready --exclusive-control-confirmed
 
 CAUTION:
     Before running with hardware, clear the area around both arms, keep a hand
@@ -50,7 +53,7 @@ from typing import Optional
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from arx_wrapper import ArmEndpoint, ArxArm, ArxConfig, MotionGate
 
 
 def load_state(episode_dir: str):
@@ -213,7 +216,12 @@ def main():
     ap.add_argument('--left-can', type=str, default='can1')
     ap.add_argument('--right-can', type=str, default='can3')
     ap.add_argument('--urdf-name', type=str, default='a5.urdf')
-    ap.add_argument('--dry-run', action='store_true', help='load data and print summary, no hardware')
+    ap.add_argument('--dry-run', action='store_true',
+                    help='load data and print summary, no hardware (also default without --execute)')
+    ap.add_argument('--execute', action='store_true', help='allow real hardware motion')
+    ap.add_argument('--clearance-confirmed', action='store_true')
+    ap.add_argument('--estop-ready', action='store_true')
+    ap.add_argument('--exclusive-control-confirmed', action='store_true')
     ap.add_argument('--grip-hold-thresh', type=float, default=-1.0,
                     help='recorded gripper values ABOVE this (closer to 0 = closed) are treated as '
                          '"hold intent" frames. default: -1.0')
@@ -260,18 +268,40 @@ def main():
                       f'(g > {args.grip_hold_thresh}) -> set_gripper_pos({args.grip_hold_target}) '
                       f'(motor chases this against object → sustained grip torque)')
 
-    if args.dry_run:
-        print('dry-run: not connecting to arms')
+    if args.dry_run and args.execute:
+        sys.exit('--dry-run and --execute are mutually exclusive')
+    if not args.execute:
+        print('dry-run: not importing the vendor SDK or connecting to arms')
         return
 
-    # Import here so --dry-run works on machines without arx_r5_python.
-    from A5.bimanual import SingleArm
+    gate = MotionGate(
+        execute=args.execute,
+        clearance_confirmed=args.clearance_confirmed,
+        estop_ready=args.estop_ready,
+        control_source_exclusive=args.exclusive_control_confirmed,
+    )
+    gate.require_motion()
+    config = ArxConfig.from_env()
 
     arms = {'left_arm': None, 'right_arm': None}
-    if not args.no_left:
-        arms['left_arm'] = SingleArm({'can_port': args.left_can, 'urdf_name': args.urdf_name})
-    if not args.no_right:
-        arms['right_arm'] = SingleArm({'can_port': args.right_can, 'urdf_name': args.urdf_name})
+    try:
+        if not args.no_left:
+            arms['left_arm'] = ArxArm(
+                ArmEndpoint('left', args.left_can, args.urdf_name),
+                config=config,
+                gate=gate,
+            ).connect()
+        if not args.no_right:
+            arms['right_arm'] = ArxArm(
+                ArmEndpoint('right', args.right_can, args.urdf_name),
+                config=config,
+                gate=gate,
+            ).connect()
+    except Exception:
+        for arm in arms.values():
+            if arm is not None:
+                arm.close()
+        raise
 
     # SIGINT during replay → stop sending commands. We don't try to "park" the
     # arm because that needs another planned motion; safer to let the firmware
@@ -291,7 +321,7 @@ def main():
     recorder = None
     if args.record_to:
         import rospy
-        from data_replay.replay_recorder import ReplayRecorder
+        from replay_recorder import ReplayRecorder
         source_name = os.path.basename(os.path.normpath(ep))
         base = os.path.expanduser(args.record_to)
         record_dir = os.path.join(base, source_name)
@@ -324,6 +354,9 @@ def main():
     finally:
         if recorder is not None:
             recorder.finalize()
+        for arm in arms.values():
+            if arm is not None:
+                arm.close()
 
 
 if __name__ == '__main__':

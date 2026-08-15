@@ -1,8 +1,21 @@
-# ARX 双臂数据采集系统使用文档
+# arx_wrapper：ARX A5 双臂安全封装与数据采集
 
 ## 概述
 
-该repo是一个交互式的双臂数据采集系统,用于管理 ARX 双臂示教数据采集的完整流程。通过菜单选项控制 ROS、相机、机械臂、数据订阅器的启停,自动管理 gnome-terminal 子窗口,采集数据保存为 pickle 文件。
+`arx_wrapper` 是 LV Robotics Lab 面向 ARX A5 双臂的标准 wrapper 仓库。它在原交互式示教数采、回放、可视化和训练工具之上，新增了可安装的 `src/arx_wrapper` Python 包、类型化配置、只读 `doctor`、延迟加载 SDK、显式运动安全门和无硬件单测。
+
+仓库由 `ARX_A5_Dual_ARM` 更名而来；已有 `A5/`、`data_collection/`、`data_replay/`、数据格式和 `dual_arm_sys.sh` 入口继续保留。新代码统一使用 `import arx_wrapper`。架构、迁移和上游维护边界分别见 [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)、[`docs/MIGRATION.md`](./docs/MIGRATION.md) 和 [`docs/UPSTREAM.md`](./docs/UPSTREAM.md)。英文概览见 [`README_EN.md`](./README_EN.md)。
+
+### Wrapper 快速验证（不连接硬件）
+
+```bash
+python -m pip install -e '.[dev,replay]'
+arx-config
+arx-doctor
+pytest
+```
+
+`arx-doctor` 默认只报告，不会启动 CAN、导入 ARX 二进制或发运动命令。真实回放默认关闭；只有同时给出 `--execute --clearance-confirmed --estop-ready --exclusive-control-confirmed` 才允许进入硬件路径。软件门通过不代表物理硬件验收完成。
 
 ![双臂](./docs/dual_arm.jpg)
 ![架构图](./docs/sys.png)
@@ -11,7 +24,8 @@
 请参考 [A5 SDK 安装文档](./A5/README.md) 安装好 ARX A5双臂机械臂。官方仓库请参考：[https://github.com/ARXroboticsX/A5](https://github.com/ARXroboticsX/A5)。另外，你还需要以下必须的软件包：
 
 ```bash
-pip install opencv-python==4.6.0 pyrealsense2==2.54.2.5684 numpy==1.26.4 "rerun-sdk<0.20" h5py
+pip install -e '.[collection,realsense,replay]'
+cp config/arx.env.example config/arx.local.env
 ```
 
 > `h5py` 用于深度图的分块流式写盘(`<cam>_depth.h5`),避免长录制把内存撑爆。
@@ -23,7 +37,7 @@ pip install opencv-python==4.6.0 pyrealsense2==2.54.2.5684 numpy==1.26.4 "rerun-
 
 ```bash
 conda activate robo_ctrl
-cd ~/workspace/ARX_A5_Dual_ARM
+cd ~/workspace/arx_wrapper
 ./dual_arm_sys.sh
 ```
 
@@ -63,7 +77,7 @@ cd ~/workspace/ARX_A5_Dual_ARM
 - `/cam_left_wrist_image`、`/cam_left_wrist_depth` — 左腕 D405
 - `/cam_right_wrist_image`、`/cam_right_wrist_depth` — 右腕 D405
 
-> serial → 名字的映射写死在 `realsense_pub_node.py` 的 `SERIAL_TO_NAME` 里。换相机时必须同步更新,否则录到的数据 `cam_top` 可能是腕上那只。
+> serial → 名字的映射来自忽略提交的 `config/arx.local.env`。换相机时必须先核对实物标签，再更新 `ARX_CAM_*_SERIAL`，否则录到的数据 `cam_top` 可能是腕上那只。
 
 完成后控制台会提示「示教环境就绪」。如果 CAN 没起来(常见原因:`sudo -n` 没配 NOPASSWD)脚本会直接 abort,不会进入下一步。
 
@@ -72,6 +86,8 @@ cd ~/workspace/ARX_A5_Dual_ARM
 **功能**:启动机械臂示教和数据订阅器,开始记录一条新轨迹。
 
 **前置条件**:必须先执行过步骤 1,否则会提示 roscore 未运行。
+
+启动机械臂发布器前，菜单会要求逐项确认清场、急停和独占控制，并输入 `TEACH`。取消或输入不匹配时不会连接机械臂。
 
 **会启动的进程和窗口**:
 
@@ -234,14 +250,14 @@ TASK_NAME=cup_to_shelf ./dual_arm_sys.sh
 ```bash
 sudo visudo
 # 加一行(替换 USERNAME):
-USERNAME ALL=(ALL) NOPASSWD: /home/USERNAME/workspace/ARX_A5_Dual_ARM/A5/ARX_CAN/arx_can1, /home/USERNAME/workspace/ARX_A5_Dual_ARM/A5/ARX_CAN/arx_can3
+USERNAME ALL=(ALL) NOPASSWD: /home/USERNAME/workspace/arx_wrapper/A5/ARX_CAN/arx_can1, /home/USERNAME/workspace/arx_wrapper/A5/ARX_CAN/arx_can3
 ```
 
 或者手动 `sudo $PROJ/A5/ARX_CAN/arx_can1`、`arx_can3` 起一次,`[1]` 检测到接口已 UP 会跳过启动。
 
-### Q7:相机 serial 不在 SERIAL_TO_NAME 里
+### Q7:相机 serial 不在配置里
 
-换了相机/新机器会报 `WARNING: unknown camera serial(s) — skipped`。把新 serial 加到 `data_collection/realsense_pub_node.py` 的 `SERIAL_TO_NAME` 字典里,逻辑名按用途选(`cam_top` / `cam_left_wrist` / `cam_right_wrist`)。这个绑定必须做,否则 USB 枚举顺序会让顶视图和腕视图随机交换。
+换了相机/新机器会报 `WARNING: unknown camera serial(s) — skipped`。把经实物核对的新 serial 写入 `config/arx.local.env` 的 `ARX_CAM_TOP_SERIAL`、`ARX_CAM_LEFT_WRIST_SERIAL` 或 `ARX_CAM_RIGHT_WRIST_SERIAL`。这个绑定必须做,否则 USB 枚举顺序会让顶视图和腕视图随机交换。
 
 ## 数据可视化
 
@@ -255,7 +271,7 @@ USERNAME ALL=(ALL) NOPASSWD: /home/USERNAME/workspace/ARX_A5_Dual_ARM/A5/ARX_CAN
 
 ```bash
 conda activate robo_ctrl
-cd ~/workspace/ARX_A5_Dual_ARM/data_collection
+cd ~/workspace/arx_wrapper/data_collection
 python visualize_episode.py ~/workspace/raw_data/egg_to_bowl/0000
 ```
 
@@ -276,17 +292,22 @@ python visualize_episode.py ~/workspace/raw_data/egg_to_bowl/0000
 
 - 回放前用 `[1]` 拉起 CAN(不需要 [2],也不需要 roscore/相机)
 - **第一次跑必须清场 + 手放急停按钮**:首帧从当前姿态到 `joints[0]` 会插值过渡,但臂仍可能朝意外方向走
-- 建议先 `--right-only` 或 `--left-only` 单臂验证再上双臂
+- 建议先用 `--no-left`（仅右臂）或 `--no-right`（仅左臂）验证再上双臂
 - 失败 episode (`_failed/`) 通常 replay 也会失败,不要拿它做首测
 
 ## 文件结构
 
 ```
-ARX_A5_Dual_ARM/
+arx_wrapper/
+├── pyproject.toml                  # arx-wrapper 安装、CLI、测试和 lint 配置
+├── src/arx_wrapper/                # 类型化配置、只读 doctor、SDK 生命周期和安全门
+├── config/arx.env.example          # 本机 CAN/相机配置模板（local 文件不入 Git）
+├── tests/                          # 无 ROS/无 CAN/无真实硬件单测
+├── docs/                           # 架构、迁移和上游维护边界
 ├── dual_arm_sys.sh                 # 启动脚本(根目录,管 CAN + roscore + 采集 + 可视化)
 ├── data_collection/                # 采集端(写数据)
 │   ├── dual_arm_ctrl.py            # 双臂重力补偿 + 发布 joint/eef
-│   ├── realsense_pub_node.py       # RealSense 多相机发布(serial → 逻辑名硬绑定)
+│   ├── realsense_pub_node.py       # RealSense 多相机发布(读取 serial → 逻辑名配置)
 │   ├── data_record.py              # 订阅所有话题 + 流式落盘
 │   └── visualize_episode.py        # Rerun 可视化
 ├── data_replay/                    # 验证端(读数据 + 控臂)

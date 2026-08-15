@@ -7,7 +7,7 @@ waiting until end-of-batch verification.
 
 Usage:
     ~/miniconda3/envs/robo_ctrl/bin/python \\
-        ~/workspace/ARX_A5_Dual_ARM/data_collection/check_episode.py \\
+        ~/workspace/arx_wrapper/data_collection/check_episode.py \\
         ~/workspace/raw_data/egg_to_bowl/0103
 
 Exit codes:

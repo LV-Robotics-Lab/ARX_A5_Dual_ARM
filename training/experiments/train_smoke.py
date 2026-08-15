@@ -8,7 +8,7 @@ model -> backprop pipeline works end-to-end. Logs go through
 experiment_tracker.
 
 Usage (default arm=C_raw_drag_only):
-    cd ~/workspace/ARX_A5_Dual_ARM/training/experiments
+    cd ~/workspace/arx_wrapper/training/experiments
     ~/miniconda3/envs/robo_ctrl/bin/python train_smoke.py \\
         --steps 100 --batch-size 4 --image-size 64 48
 """

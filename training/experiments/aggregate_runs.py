@@ -14,7 +14,7 @@ so report N/A when those keys are missing.
 
 Usage:
     ~/miniconda3/envs/robo_ctrl/bin/python \\
-        ~/workspace/ARX_A5_Dual_ARM/training/experiments/aggregate_runs.py \\
+        ~/workspace/arx_wrapper/training/experiments/aggregate_runs.py \\
         --runs-dir ~/workspace/.experiment_runs \\
         --out ~/workspace/.experiment_runs/finetune_comparison_report.json \\
         --report ~/workspace/.experiment_runs/finetune_comparison_report.md

@@ -1,0 +1,3 @@
+include README_EN.md
+include config/arx.env.example
+recursive-include docs *.md

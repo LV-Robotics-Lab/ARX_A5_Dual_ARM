@@ -15,7 +15,7 @@ Source of truth: the verifier's existing per-episode report. No new scans.
 
 Usage:
     ~/miniconda3/envs/robo_ctrl/bin/python \\
-        ~/workspace/ARX_A5_Dual_ARM/data_collection/stillness_failure_breakdown.py \\
+        ~/workspace/arx_wrapper/data_collection/stillness_failure_breakdown.py \\
         --report ~/workspace/.verifier_reports/raw_data_full_report.json \\
         --out ~/workspace/.verifier_reports/stillness_failure_breakdown.json
 """

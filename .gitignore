@@ -70,6 +70,7 @@ Thumbs.db
 # ============ Conda / Python 虚拟环境 ============
 .env
 .venv
+config/arx.local.env
 env/
 venv/
 ENV/

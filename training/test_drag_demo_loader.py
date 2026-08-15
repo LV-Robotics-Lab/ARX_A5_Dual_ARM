@@ -2,7 +2,7 @@
 """Tests for drag_demo_loader.
 
 Run:
-  cd ~/workspace/ARX_A5_Dual_ARM/training && \
+  cd ~/workspace/arx_wrapper/training && \
     ~/miniconda3/envs/robo_ctrl/bin/python -m unittest \
       test_drag_demo_loader -v
 """

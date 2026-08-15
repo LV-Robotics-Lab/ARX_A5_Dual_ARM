@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: python -m pip install -e '.[dev,replay]'
+      - name: Unit tests
+        run: pytest
+      - name: Lint wrapper package and tests
+        run: ruff check src tests
+      - name: Format check
+        run: ruff format --check src tests
+      - name: Offline entry-point checks
+        run: |
+          arx-config >/dev/null
+          python data_replay/replay_episode.py --help >/dev/null
+          python -m compileall -q src data_collection data_replay training A5/transmission
+          bash -n dual_arm_sys.sh

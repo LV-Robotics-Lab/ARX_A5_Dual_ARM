@@ -45,8 +45,8 @@
     }
   ],
   "training_setup": {
-    "loader": "/home/lv-robotics/workspace/ARX_A5_Dual_ARM/training/drag_demo_loader.py",
-    "split_config": "/home/lv-robotics/workspace/ARX_A5_Dual_ARM/training/split_config.json",
+    "loader": "/home/lv-robotics/workspace/arx_wrapper/training/drag_demo_loader.py",
+    "split_config": "/home/lv-robotics/workspace/arx_wrapper/training/split_config.json",
     "samples_per_episode": 32,
     "batch_size": 32,
     "image_size": [320, 180],

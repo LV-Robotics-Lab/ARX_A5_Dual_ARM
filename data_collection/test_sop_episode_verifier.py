@@ -2,7 +2,7 @@
 """Tests for sop_episode_verifier — synthesises tiny fixtures + real episodes.
 
 Run:  ~/miniconda3/envs/robo_ctrl/bin/python -m unittest \
-          ARX_A5_Dual_ARM/data_collection/test_sop_episode_verifier.py -v
+          arx_wrapper/data_collection/test_sop_episode_verifier.py -v
 """
 
 from __future__ import annotations
