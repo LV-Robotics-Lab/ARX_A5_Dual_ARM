@@ -23,3 +23,29 @@ For an upstream refresh:
 The Python distribution does not package `A5/`. Live hardware use therefore
 requires a repository checkout (or `ARX_VENDOR_ROOT` pointing to one) and a
 locally built SDK.
+
+## X5 controller SDK
+
+`third_party/arx5-sdk` is a separate, pinned submodule sourced from
+[`MrSecant/arx5-sdk`](https://github.com/MrSecant/arx5-sdk). The accepted
+baseline is commit `ce0d1e76a9237de30908ab259dd9f3e4621056cf`, matching the
+previous PrometheusV4 X5 integration.
+
+The `0.2.0` wrapper API owns this X5 boundary. A successful
+`X5DualArm.connect()` must return with both sides in damping through
+`safe_stop()`; neither connection nor shutdown may call home.
+
+Build it only on a compatible Linux robot workstation:
+
+```bash
+git submodule update --init third_party/arx5-sdk
+python -m pip install -e '.[x5]'
+./scripts/install_x5_sdk.sh
+```
+
+The install script resolves the SDK relative to this wrapper checkout and
+verifies the active environment's SOEM ABI before building. An SDK update must
+use a dedicated branch, record the new gitlink, pass the fake-SDK unit tests,
+then repeat read-only host diagnostics and separately authorized hardware
+validation. Do not update the legacy `A5/` snapshot and the X5 submodule as one
+undifferentiated change.

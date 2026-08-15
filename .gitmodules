@@ -1,0 +1,3 @@
+[submodule "third_party/arx5-sdk"]
+	path = third_party/arx5-sdk
+	url = https://github.com/MrSecant/arx5-sdk.git

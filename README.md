@@ -2,7 +2,7 @@
 
 ## 概述
 
-`arx_wrapper` 是 LV Robotics Lab 面向 ARX A5 双臂的标准 wrapper 仓库。它在原交互式示教数采、回放、可视化和训练工具之上，新增了可安装的 `src/arx_wrapper` Python 包、类型化配置、只读 `doctor`、延迟加载 SDK、显式运动安全门和无硬件单测。
+`arx_wrapper` 是 LV Robotics Lab 面向 ARX A5/X5 双臂的标准 wrapper 仓库。它在原交互式示教数采、回放、可视化和训练工具之上，新增了可安装的 `src/arx_wrapper` Python 包、类型化配置、只读 `doctor`、延迟加载 SDK、显式运动安全门和无硬件单测。X5 controller API 位于 `arx_wrapper.x5`，与 ROS、Hydra 和 Prometheus 解耦。
 
 仓库由 `ARX_A5_Dual_ARM` 更名而来；已有 `A5/`、`data_collection/`、`data_replay/`、数据格式和 `dual_arm_sys.sh` 入口继续保留。新代码统一使用 `import arx_wrapper`。架构、迁移和上游维护边界分别见 [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)、[`docs/MIGRATION.md`](./docs/MIGRATION.md) 和 [`docs/UPSTREAM.md`](./docs/UPSTREAM.md)。英文概览见 [`README_EN.md`](./README_EN.md)。
 
@@ -16,6 +16,20 @@ pytest
 ```
 
 `arx-doctor` 默认只报告，不会启动 CAN、导入 ARX 二进制或发运动命令。真实回放默认关闭；只有同时给出 `--execute --clearance-confirmed --estop-ready --exclusive-control-confirmed` 才允许进入硬件路径。软件门通过不代表物理硬件验收完成。
+
+### X5 controller 安装（Linux 机械臂工作站）
+
+```bash
+git submodule update --init third_party/arx5-sdk
+python -m pip install -e '.[x5]'
+./scripts/install_x5_sdk.sh
+```
+
+`X5DualArm(...)` 的构造和模块导入都不会加载 `arx5_interface` 或连接 CAN；
+只有 `connect()` 会加载 SDK，并在双侧 controller 建立后立即通过无需运动授权的
+`safe_stop()` 进入 damping，成功返回时绝不处于未知模式。所有运动、回零和模式命令默认由
+`MotionGate()` 拒绝。无需运动授权的 `safe_stop()`/`close()` 只请求
+damping 并释放资源，绝不会自动回零。安装和离线测试不等于真实硬件验收。
 
 ![双臂](./docs/dual_arm.jpg)
 ![架构图](./docs/sys.png)

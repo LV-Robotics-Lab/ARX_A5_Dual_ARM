@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "arx-wrapper"
-version = "0.1.0"
-description = "Safety-gated Python wrapper and data-collection tooling for ARX A5 dual-arm systems"
+version = "0.2.0"
+description = "Safety-gated Python wrapper and data-collection tooling for ARX A5/X5 dual-arm systems"
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [
@@ -18,6 +18,9 @@ Repository = "https://github.com/LV-Robotics-Lab/arx_wrapper"
 Documentation = "https://github.com/LV-Robotics-Lab/arx_wrapper#readme"
 
 [project.optional-dependencies]
+x5 = [
+  "numpy>=1.24,<2",
+]
 collection = [
   "h5py>=3.8",
   "numpy>=1.24,<2",
