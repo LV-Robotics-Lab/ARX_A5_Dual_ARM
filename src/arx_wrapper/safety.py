@@ -20,6 +20,16 @@ class MotionGate:
     estop_ready: bool = False
     control_source_exclusive: bool = False
 
+    def __post_init__(self) -> None:
+        for name in (
+            "execute",
+            "clearance_confirmed",
+            "estop_ready",
+            "control_source_exclusive",
+        ):
+            if not isinstance(getattr(self, name), bool):
+                raise TypeError(f"{name} must be a boolean")
+
     @property
     def is_dry_run(self) -> bool:
         return not self.execute

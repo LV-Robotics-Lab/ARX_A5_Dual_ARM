@@ -46,6 +46,20 @@ def test_complete_motion_gate_allows_execution() -> None:
     ).require_motion()
 
 
+@pytest.mark.parametrize(
+    "name",
+    (
+        "execute",
+        "clearance_confirmed",
+        "estop_ready",
+        "control_source_exclusive",
+    ),
+)
+def test_motion_gate_rejects_truthy_non_booleans(name: str) -> None:
+    with pytest.raises(TypeError, match=rf"{name} must be a boolean"):
+        MotionGate(**{name: "false"})
+
+
 def test_finite_vector_validates_shape_and_numbers() -> None:
     assert finite_vector(range(6), size=6, name="joints") == (0, 1, 2, 3, 4, 5)
     with pytest.raises(SafetyGateError, match="exactly 6"):
